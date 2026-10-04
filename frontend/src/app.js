@@ -39,6 +39,10 @@ let recordingChunks = [];
 let recordingTimeout = null;
 let currentAudio = null;
 let currentAudioUrl = null;
+// Verdadeiro do envio da mensagem até o fim da fala da resposta. Enquanto isso o rosto fica em
+// “pensando/falando” e a escuta por alcunhas espera: era o loop de escuta que reescrevia o estado
+// para “listening” a cada 80 ms e fazia a boca parar de mexer no meio do áudio.
+let assistantBusy = false;
 // Trechos de fala em andamento (null = nada tocando): permite "Parar áudio" encerrar tudo.
 let speechQueue = null;
 let wakeRecorder = null;
@@ -118,7 +122,10 @@ function updateMicHint(text) {
 }
 
 function micConstraints() {
-  const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  // O processamento de “chamada de voz” atrapalha o reconhecedor: a supressão de ruído corta
+  // pedaços das palavras (o Whisper foi treinado com áudio cru). Mantemos o cancelamento de eco
+  // para o microfone não captar a própria voz do assistente e o ganho automático para o nível.
+  const audio = { echoCancellation: true, noiseSuppression: false, autoGainControl: true };
   if (chosenMicId) audio.deviceId = { exact: chosenMicId };
   return { audio };
 }
@@ -227,6 +234,7 @@ function idleVoiceLabel() {
 }
 
 function showReadyState() {
+  if (assistantBusy) return; // não sobrescreve “pensando”/“falando”
   if (wakeEnabled) {
     setState("listening", idleVoiceLabel());
   } else {
@@ -435,9 +443,10 @@ async function captureSpeech(
   });
 }
 
-// Espera o áudio da resposta terminar para o microfone não escutar a própria voz.
+// Espera o áudio da resposta terminar para o microfone não escutar a própria voz. Inclui o
+// intervalo de síntese: sem isso a escuta recomeça antes de o som sair e apaga o “falando”.
 async function waitWhileSpeaking() {
-  while (currentAudio && !currentAudio.paused) {
+  while (assistantBusy || (currentAudio && !currentAudio.paused)) {
     await new Promise((resolve) => window.setTimeout(resolve, 150));
   }
 }
@@ -596,6 +605,7 @@ async function checkHealth() {
 }
 
 function finishPlayback() {
+  assistantBusy = false;
   speechQueue = null;
   currentAudio = null;
   if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
@@ -606,12 +616,12 @@ function finishPlayback() {
   showReadyState();
 }
 
-// Kokoro sintetiza em CPU: um trecho de até 220 caracteres leva ~1,3 s para virar áudio.
-// Para a fala começar quase junto com o texto, o PRIMEIRO trecho é curto (uma frase) e os
-// seguintes usam o teto maior — eles são sintetizados enquanto o anterior toca, então o tempo
+// Kokoro sintetiza em CPU: um trecho de até 220 caracteres leva ~1,3 s para virar áudio. Para a
+// fala começar quase junto com o texto, o PRIMEIRO trecho é bem curto (uma oração, ~70 caracteres)
+// e os seguintes usam o teto maior — eles são sintetizados enquanto o anterior toca, então o tempo
 // total não muda, mas a primeira palavra sai bem antes. Frases gigantes (sem pontuação) são
-// cortadas perto do limite, sempre em espaço, para nenhum trecho inicial travar a fala.
-const FIRST_SPEECH_CHARS = 120;
+// cortadas perto do limite, preferindo vírgula/ponto e vírgula para o corte soar natural.
+const FIRST_SPEECH_CHARS = 70;
 const SPEECH_CHUNK_CHARS = 220;
 
 function cutLongSentence(sentence, limit) {
@@ -619,10 +629,15 @@ function cutLongSentence(sentence, limit) {
   const pieces = [];
   let rest = sentence;
   while (rest.length > limit) {
-    const corte = rest.lastIndexOf(" ", limit);
-    const posicao = corte > limit * 0.5 ? corte : limit;
-    pieces.push(rest.slice(0, posicao).trim());
-    rest = rest.slice(posicao).trim();
+    const janela = rest.slice(0, limit);
+    const pausa = Math.max(janela.lastIndexOf(","), janela.lastIndexOf(";"));
+    const espaco = janela.lastIndexOf(" ");
+    const minimo = limit * 0.4;
+    let corte = limit;
+    if (pausa >= minimo) corte = pausa + 1;
+    else if (espaco >= minimo) corte = espaco;
+    pieces.push(rest.slice(0, corte).trim());
+    rest = rest.slice(corte).trim();
   }
   if (rest) pieces.push(rest);
   return pieces;
@@ -661,6 +676,23 @@ async function synthesize(text) {
   return response.blob();
 }
 
+// Aquece o sintetizador: a primeira síntese depois de o container subir é bem mais lenta (o modelo
+// é carregado nessa hora). Um pedido curto logo na abertura deixa o Kokoro pronto, então a primeira
+// resposta já sai no ritmo normal em vez de somar o carregamento à espera do som.
+async function warmUpSpeech() {
+  const startedAt = performance.now();
+  try {
+    const response = await fetch("/api/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Olá." }),
+    });
+    log(`síntese aquecida em ${Math.round(performance.now() - startedAt)} ms (HTTP ${response.status})`);
+  } catch (error) {
+    logWarn("não consegui aquecer a síntese de voz:", error);
+  }
+}
+
 async function speakAnswer(text) {
   const startedAt = performance.now();
   try {
@@ -668,6 +700,8 @@ async function speakAnswer(text) {
       currentAudio.pause();
       finishPlayback();
     }
+    // Depois do finishPlayback acima (que zera a flag): daqui até o fim da fala a escuta espera.
+    assistantBusy = true;
     const chunks = splitForSpeech(text);
     speechQueue = chunks;
     stopSpeakingButton.textContent = "Parar áudio";
@@ -700,6 +734,7 @@ async function speakAnswer(text) {
     }
     finishPlayback();
   } catch (error) {
+    assistantBusy = false;
     logWarn("falha na síntese de voz:", error);
     if (currentAudio) {
       // Mantém o trecho que já existe para tocar no botão (ex.: o navegador bloqueou o autoplay).
@@ -857,6 +892,7 @@ void refreshMicDevices();
 // Reabre o painel como o usuário deixou e devolve o histórico da sessão (mesmo contexto do modelo).
 setChatOpen(localStorage.getItem(chatOpenKey) === "true", { focus: false });
 void restoreConversation();
+void warmUpSpeech();
 log("interface iniciada — chat, voz e painel de debug prontos");
 chatToggle.addEventListener("click", () => setChatOpen(!terminal.classList.contains("chat-open")));
 chatClose.addEventListener("click", () => setChatOpen(false));
@@ -952,6 +988,7 @@ async function sendMessage(rawMessage) {
   input.value = "";
   input.style.height = "auto";
   sendButton.disabled = true;
+  assistantBusy = true;
   setState("thinking", "Estou pensando…");
   const pending = addBubble("assistant", "…");
 
@@ -995,11 +1032,20 @@ async function sendMessage(rawMessage) {
       }
       if (sources.querySelector("a")) pending.after(sources);
     }
-    if (skipNextSpeech) skipNextSpeech = false;
-    else if (result.should_speak !== false) void speakAnswer(result.answer);
-    showReadyState();
+    if (skipNextSpeech) {
+      skipNextSpeech = false;
+      assistantBusy = false;
+      showReadyState();
+    } else if (result.should_speak !== false) {
+      // speakAnswer assume o estado e só libera no fim da fala (finishPlayback).
+      void speakAnswer(result.answer);
+    } else {
+      assistantBusy = false;
+      showReadyState();
+    }
     checkHealth();
   } catch (error) {
+    assistantBusy = false;
     logWarn("falha no /api/chat:", error);
     pending.textContent = error.message || "Não consegui acessar o assistente.";
     pending.classList.add("error");

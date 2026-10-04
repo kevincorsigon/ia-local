@@ -22,7 +22,7 @@ Edite `config/assistant.yaml` para mudar o nome, a personalidade, as alcunhas e 
 
 O clima consulta Open-Meteo somente quando a pergunta pede previsão e inclui uma cidade brasileira. Pesquisa geral e jogos usam Brave Search: configure `BRAVE_SEARCH_API_KEY` em `.env` para ativá-los. O Docker Compose injeta essa variável no container do backend em tempo de execução; a chave não é copiada para a imagem nem para o frontend. Sem ela, o assistente informa que a pesquisa precisa ser configurada. O código não consulta a web para perguntas gerais.
 
-O microfone do botão “Falar” é capturado pelo navegador; o áudio vai em memória ao backend, que usa FFmpeg e Vosk localmente para transcrever. A síntese roda no container Kokoro — imagem CPU do [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), ~1,5 GB, com o modelo `v1_0` e as vozes já embutidos — com a voz feminina brasileira `pf_dora`, e devolve áudio WAV. Como o modelo vem na imagem, não há download no primeiro boot e a síntese funciona offline; a fonte da imagem pode ser trocada por `TTS_IMAGE` em `.env`. Áudio gravado não é salvo em disco pelo app.
+O microfone do botão “Falar” é capturado pelo navegador; o áudio vai em memória ao backend, que usa FFmpeg e o motor local de fala para transcrever — Whisper por padrão (`STT_ENGINE=whisper`), com Vosk como alternativa rápida e menos precisa. A síntese roda no container Kokoro — imagem CPU do [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), ~1,5 GB, com o modelo `v1_0` e as vozes já embutidos — com a voz feminina brasileira `pf_dora`, e devolve áudio WAV. Como o modelo vem na imagem, não há download no primeiro boot e a síntese funciona offline; a fonte da imagem pode ser trocada por `TTS_IMAGE` em `.env`. Áudio gravado não é salvo em disco pelo app.
 
 No Ubuntu com Docker Engine, `host.docker.internal` é mapeado para o host por `host-gateway`. No WSL, escolha se o Ollama será executado na distribuição Linux ou no Windows e configure a URL correspondente. A API precisa responder tanto para o script como de dentro da rede Docker. A escuta por alcunhas envia clipes independentes de seis segundos para transcrição; ela não usa um detector acústico dedicado e pode ter latência ou falsos acionamentos.
 
@@ -65,6 +65,22 @@ docker volume inspect assistente-local-data
 ```
 
 `MAX_MEMORIES` em `.env` limita quantos itens ficam guardados (padrão 200); ao atingir o limite, os mais antigos saem. Se o volume ficar indisponível, o chat continua respondendo e avisa que não conseguiu guardar. Apagar o volume (`docker compose ... down -v`) remove toda a memória.
+
+### Memória como regra das ferramentas
+
+Além de personalizar as respostas, a memória alimenta **as ferramentas**. Uma memória que manda usar
+uma fonte funciona como guideline da busca:
+
+> “Grave que, quando eu perguntar sobre o Corinthians, você deve usar o site meutimao.com.br.”
+
+A partir daí, perguntas sobre o Corinthians vão para a ferramenta de esportes com `meutimao.com.br` na
+consulta e as fontes desse site vêm primeiro na lista. A regra vale só para o assunto citado — a mesma
+memória não desvia perguntas sobre outro time. Se a regra não citar assunto (“sempre olhe primeiro no
+meu Timão.com”), ela vale apenas como preferência de ordem, sem mudar a consulta, para não desviar
+perguntas de outros temas.
+
+Também passou a valer “salve na memória” (antes só “grave/lembre-se/anote” eram reconhecidos). Para
+conferir o que está guardado: `curl http://localhost:8080/api/memories`.
 
 ## Conversa só por voz (alcunhas)
 
@@ -138,29 +154,52 @@ Leitura rápida: `mudo=true` ou `estado=ended` no microfone, `AudioContext: susp
 
 ### Qualidade do reconhecimento (modelo de fala)
 
-O Vosk tem dois modelos pt-BR, e a diferença é grande em fala espontânea:
+O motor é escolhido no `.env` por `STT_ENGINE`. Medições deste projeto em fala espontânea:
 
-| Modelo | Tamanho | Erro por palavra | Quando usar |
-| --- | --- | --- | --- |
-| `vosk-model-small-pt-0.3` | 31 MB | ~69 % | máquinas fracas (Raspberry/J5040): entende pouco de conversa livre |
-| `vosk-model-pt-fb-v0.1.1-20220516_2113` | 1,6 GB | ~54 % | recomendado para uso normal (modelo do projeto FalaBrasil, licença **GPLv3**) |
+| Motor | Modelo | Erro por palavra | Tempo por frase | Quando usar |
+| --- | --- | --- | --- | --- |
+| `whisper` | `small` (int8) | baixo — acerta nomes próprios | ~2–3 s | **padrão recomendado** |
+| `vosk` | `vosk-model-pt-fb-v0.1.1-20220516_2113` (1,6 GB) | ~54 % | 0,04–0,16 s | só se a velocidade importar mais que a precisão |
+| `vosk` | `vosk-model-small-pt-0.3` (31 MB) | ~69 % | ~0,05 s | máquinas muito fracas (Raspberry/J5040) |
 
-Troque em `.env` e rode `./scripts/bootstrap.sh` para baixar o outro:
+O Vosk é dezenas de vezes mais rápido, mas em conversa livre troca **muitas** palavras — é ele que
+“confunde” o que você fala. O Whisper entende bem mais, inclusive nomes próprios, e é o padrão
+(`STT_ENGINE=whisper`).
 
-```bash
-VOSK_MODEL_NAME=vosk-model-pt-fb-v0.1.1-20220516_2113
-```
+Três ajustes entram junto com o Whisper e fazem diferença na precisão:
 
-O modelo fica em `backend/models/` (fora do Git) e é carregado na primeira transcrição — com o grande,
-o consumo de RAM sobe (alguns GB) e essa primeira transcrição demora mais.
+- **`WHISPER_BEAM_SIZE=5`** (o código usava `1`, decodificação gulosa): menos trocas de palavra ao
+  custo de um pouco mais de CPU.
+- **Vocabulário do assistente** como `initial_prompt`: o nome e as alcunhas do `config/assistant.yaml`
+  enviesam o decoder (é o que evita `Kunica` virar `cônica`). Para reforçar, defina
+  `WHISPER_INITIAL_PROMPT` no `.env` com nomes de cidades e jargão do seu dia a dia.
+- **Microfone sem supressão de ruído** (`frontend/src/app.js`): o processamento de “chamada de voz”
+  corta pedaços das palavras. Cancelamento de eco e ganho automático continuam ligados.
+
+Para trocar o tamanho do modelo do Whisper: `WHISPER_MODEL=medium` erra ainda menos (bem mais lento em
+CPU) e `base`/`tiny` são mais rápidos e mais imprecisos.
+
+O modelo do Whisper é baixado na primeira vez (~460 MB para o `small`) e fica no volume Docker
+(`/data/whisper`). Se ficar no Vosk, o modelo fica em `backend/models/` (fora do Git), com licença
+**GPLv3** para o grande (projeto FalaBrasil), e o primeiro carregamento consome alguns GB de RAM.
 
 ### Resposta falada em trechos
 
 O Kokoro sintetiza em CPU: uma resposta inteira leva ~4 s para virar áudio. Para a fala começar
 quase junto com o texto na tela, o `app.js` fatia a resposta em frases e mantém o **primeiro trecho
-curto** (até ~120 caracteres, cortando frases gigantes em espaços); ele toca assim que chega — em
-geral bem antes de 1 s — enquanto já sintetiza o trecho seguinte (até ~220 caracteres). O tempo total
-não muda, mas a primeira palavra sai bem antes. O botão **Parar áudio** interrompe a fila inteira.
+bem curto** (uma oração, ~70 caracteres, cortando na vírgula quando dá); ele toca assim que chega —
+em geral bem antes de 1 s — enquanto já sintetiza o trecho seguinte (até ~220 caracteres). O tempo
+total não muda, mas a primeira palavra sai bem antes. O botão **Parar áudio** interrompe a fila
+inteira.
+
+A página também **aquece o sintetizador** ao abrir (um `/api/speak` com texto curto, descartado):
+sem isso a primeira resposta pagaria o carregamento do modelo do Kokoro junto com a espera do som.
+No painel **Debug áudio** dá para ver a conta de cada etapa: `resposta em N ms` (chat) e
+`voz: primeiro áudio pronto em N ms` (síntese).
+
+Enquanto a resposta é falada, o rosto fica em `speaking` e a boca abre e fecha durante **todo** o
+áudio: a escuta por alcunhas espera o fim da fala. Antes ela recomeçava no meio da síntese e
+reescrevia o estado para `listening` a cada 80 ms, o que congelava a boca.
 
 ### Tela cheia
 
@@ -178,6 +217,39 @@ pelo comando inteiro.
 
 Se você falar só o comando (“pesquisa na internet”), o assistente pergunta o que pesquisar e trata a
 **próxima fala** como o termo da busca, na mesma sessão.
+
+### O que o assistente consegue fazer
+
+O catálogo das ferramentas fica em `config/assistant.yaml`, em `capabilities` (cada item tem `title`
+e `detail` com um exemplo de pergunta). Ele vai no **prompt do sistema**, então perguntas como
+“quais ferramentas você tem?” ou “o que você consegue fazer?” são respondidas pelo próprio modelo com
+a lista real — e o prompt deixa explícito que essa é a lista completa, para ele não inventar
+capacidades que não existem.
+
+O mesmo catálogo sai em `GET /api/capabilities` (útil para conferir) e, se você remover a chave do
+YAML, o backend usa um padrão embutido. Para anunciar outra coisa, basta editar o YAML e recriar o
+backend.
+
+As respostas saem em **texto simples**: o backend remove a formatação de markdown que o modelo
+insiste em usar (`**negrito**`, listas com `*`, `#` de título, crases) e os **emojis** antes de
+devolver — `*   **Clima:** 🙂 item` vira `- Clima: item`. Isso é necessário porque o balão do chat
+mostra o texto literal (não renderiza markdown) e o sintetizador de voz leria os asteriscos. O prompt
+também pede texto simples e sem emoji; a limpeza no código é a garantia, já que modelo pequeno nem
+sempre obedece.
+
+A limpeza é conservadora de propósito: valores técnicos (`14.4°C`, `94%`, datas, `;`), sublinhados de
+URLs (`meutimao.com.br/jogos_do_dia`) e setas comuns (`→`) ficam intactos.
+
+### Quando o clima pede a cidade
+
+Se a cidade sair errada na fala (o reconhecedor troca nomes próprios — “Itapecerica da Serra” vira
+“Tápicirica da Serra”), o assistente responde que não encontrou e **espera a correção**: a próxima
+fala é tratada como a cidade, não como conversa livre. Isso evita o pior caso, que era o modelo
+inventar uma previsão com números que não vieram de ferramenta nenhuma.
+
+O estado é aceito junto e descartado na consulta: “Itapecerica da Serra, SP”, “Itapecerica da Serra,
+São Paulo” e “... estado de São Paulo” consultam a mesma cidade. Para reduzir os erros na origem,
+liste suas cidades em `WHISPER_INITIAL_PROMPT` no `.env` (ver “Qualidade do reconhecimento”).
 
 ### Contexto da conversa
 

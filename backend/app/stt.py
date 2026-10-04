@@ -26,12 +26,41 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_CACHE_DIR = Path(os.getenv("WHISPER_CACHE_DIR", "/data/whisper"))
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "pt")
+# ``beam_size=1`` é decodificação gulosa: rápida, porém bem menos precisa em fala espontânea.
+# 5 é o padrão do Whisper e reduz bastante as trocas de palavra (custo: um pouco mais de CPU).
+WHISPER_BEAM_SIZE = max(1, int(os.getenv("WHISPER_BEAM_SIZE", "5")))
+# Texto de contexto opcional para enviesar o decoder (nomes, jargão). Vazio = monta o prompt
+# a partir de ``set_domain_terms`` (nome e alcunhas do assistente, vindos da configuração).
+WHISPER_INITIAL_PROMPT = os.getenv("WHISPER_INITIAL_PROMPT", "").strip()
 # Em máquinas fracas (NUC de 4 núcleos) vale reservar núcleos para o modelo de linguagem
 # e para o sintetizador, senão as três coisas competem pela mesma CPU.
 WHISPER_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", "0"))
 
 _model: Any | None = None
 _load_lock = threading.Lock()
+
+# Vocabulário esperado (nome do assistente, alcunhas, comandos). Vira o ``initial_prompt`` do
+# Whisper: sem isso, nomes próprios saem trocados — medido neste projeto, “Kunica” vira “cônica”
+# e “TVzinha” vira “vizinha”. A lista é curta de propósito: prompt longo tende a alucinar termos.
+_domain_terms: list[str] = []
+
+
+def set_domain_terms(terms: list[str]) -> None:
+    """Define o vocabulário que o reconhecedor deve esperar (nome e alcunhas do assistente)."""
+    global _domain_terms
+    _domain_terms = [term.strip() for term in terms if term and term.strip()]
+
+
+def _initial_prompt() -> str | None:
+    """Junta o texto do `.env` (cidades, jargão) com o vocabulário do assistente (nome/alcunhas)."""
+    parts: list[str] = []
+    if WHISPER_INITIAL_PROMPT:
+        parts.append(WHISPER_INITIAL_PROMPT)
+    if _domain_terms:
+        parts.append("Palavras frequentes: " + ", ".join(_domain_terms) + ".")
+    if not parts:
+        return None
+    return "Conversa em português do Brasil. " + " ".join(parts)
 
 
 class ModelUnavailable(RuntimeError):
@@ -78,6 +107,7 @@ def describe() -> dict[str, Any]:
             "model": WHISPER_MODEL,
             "compute_type": WHISPER_COMPUTE_TYPE,
             "cpu_threads": WHISPER_CPU_THREADS,
+            "beam_size": WHISPER_BEAM_SIZE,
             "available": available(),
         }
     return {
@@ -85,6 +115,7 @@ def describe() -> dict[str, Any]:
         "model": VOSK_MODEL_PATH.name,
         "compute_type": "",
         "cpu_threads": 0,
+        "beam_size": 0,
         "available": VOSK_MODEL_PATH.is_dir(),
     }
 
@@ -170,10 +201,11 @@ def _transcribe_whisper(pcm: bytes) -> tuple[str, float]:
     segments, _info = _load_whisper().transcribe(
         samples,
         language=WHISPER_LANGUAGE,
-        beam_size=1,
+        beam_size=WHISPER_BEAM_SIZE,
         temperature=0.0,
         vad_filter=True,
         condition_on_previous_text=False,
+        initial_prompt=_initial_prompt(),
     )
     parts: list[str] = []
     probabilities: list[float] = []

@@ -12,7 +12,10 @@ from app.tools import (
     _extract_location,
     extract_memory_text,
     extract_search_text,
+    looks_like_place,
+    memory_source_hint,
     route_question,
+    to_plain_text,
     weather_tool,
     web_search_tool,
 )
@@ -127,6 +130,11 @@ def test_clima_tem_prioridade_sobre_pesquisa() -> None:
         # Palavras de tempo entre a preposição e a cidade/estado (“... para X esse fim de semana”).
         ("Com previsão do tempo para Itapecerica da Serra esse fim de semana", "Itapecerica da Serra"),
         ("Qual a previsão para o fim de semana em Campos do Jordão?", "Campos do Jordão"),
+        # O estado por extenso (resposta típica de “me diga a cidade e o estado”) não é a cidade:
+        ("Itapcerica da Serra, São Paulo.", "Itapcerica da Serra"),
+        ("Itapecerica da Serra estado de São Paulo", "Itapecerica da Serra"),
+        ("Itapecerica da Serra, SP", "Itapecerica da Serra"),
+        ("São Paulo", "São Paulo"),
     ],
 )
 def test_extrai_cidade_da_pergunta(message: str, expected: str) -> None:
@@ -143,6 +151,24 @@ def test_extrai_cidade_da_pergunta(message: str, expected: str) -> None:
 )
 def test_cidade_ausente_retorna_none(message: str) -> None:
     assert _extract_location(message) is None
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        # Respostas de nome de lugar aceitam virar consulta de clima.
+        ("Ita Peserica da Serra.", True),
+        ("Itapcerica da Serra, São Paulo.", True),
+        ("São Paulo", True),
+        ("a de São Paulo", True),
+        # Agradecimentos e perguntas não são lugar nenhum.
+        ("obrigado", False),
+        ("valeu, obrigado", False),
+        ("qual a previsão do tempo?", False),
+    ],
+)
+def test_reconhece_fala_que_e_a_cidade(message: str, expected: bool) -> None:
+    assert looks_like_place(message) is expected
 
 
 def test_weather_sem_cidade_pede_a_cidade_sem_rede() -> None:
@@ -300,10 +326,18 @@ def test_pesquisa_descarta_resultado_sem_https(monkeypatch: pytest.MonkeyPatch, 
         "Anote: o portão abre com 4321",
         "não esqueça que o João é meu irmão",
         "guarda isso: meu aniversário é em maio",
+        # “Salve” no sentido de guardar (com “na memória”/”isso”) também vale.
+        "O que eu falei, salve na memória. Sempre olhe primeiro no meu Timão.com",
     ],
 )
 def test_pedidos_de_guardar_vao_para_memory(message: str) -> None:
     assert route_question(message) == "memory"
+
+
+@pytest.mark.parametrize("message", ["Salve!", "Salve, Kunica!", "Oi, tudo bem?"])
+def test_cumprimento_nao_vira_pedido_de_guardar(message: str) -> None:
+    """“Salve!” sozinho é cumprimento: não pode disparar a memória."""
+    assert route_question(message) != "memory"
 
 
 @pytest.mark.parametrize(
@@ -340,7 +374,85 @@ def test_perguntas_com_lembrar_nao_viram_gravacao(message: str) -> None:
         ("lembre-se que eu prefiro café sem açúcar", "eu prefiro café sem açúcar"),
         ("anote que eu odeio acordar cedo, guarde isso", "eu odeio acordar cedo"),
         ("lembre-se", ""),
+        (
+            "O que eu falei, salve na memória. Sempre olhe primeiro no meu Timão.com",
+            "Sempre olhe primeiro no meu Timão.com",
+        ),
     ],
 )
 def test_extrai_conteudo_a_guardar(message: str, expected: str) -> None:
     assert extract_memory_text(message) == expected
+
+
+@pytest.mark.parametrize(
+    ("entrada", "esperado"),
+    [
+        ("**Clima:** previsão de 7 dias", "Clima: previsão de 7 dias"),
+        ("*Clima* e *esportes*", "Clima e esportes"),
+        ("### Título\nTexto", "Título\nTexto"),
+        # O caso do dia a dia: lista com asterisco e o título em negrito.
+        (
+            "*   **Clima e previsão do tempo:** como fica o tempo\n*   **Esportes:** próximos jogos",
+            "- Clima e previsão do tempo: como fica o tempo\n- Esportes: próximos jogos",
+        ),
+        ("Usando `código` aqui", "Usando código aqui"),
+        ("Um asterisco solto * aqui", "Um asterisco solto aqui"),
+        ("Sem formatação nenhuma.", "Sem formatação nenhuma."),
+        # Lista já formatada com “-” fica como está.
+        ("- item um\n- item dois", "- item um\n- item dois"),
+        # Texto com sublinhado/caminho não pode ser mexido.
+        ("Veja em meutimao.com.br/jogos_do_dia", "Veja em meutimao.com.br/jogos_do_dia"),
+        # Emojis saem, e o espaço que sobra é recolhido.
+        ("Bom dia! 😊 Como vai?", "Bom dia! Como vai?"),
+        ("Previsão: 🌧️ chuva e ☀️ sol", "Previsão: chuva e sol"),
+        ("Tudo certo ✅", "Tudo certo"),
+        ("Ótimo 👍🏽 mesmo", "Ótimo mesmo"),
+        ("🇧🇷 Brasil", "Brasil"),
+        ("✅ **Pronto**", "Pronto"),
+        # Setas não são emoji: ficam como estão.
+        ("SP → RJ", "SP → RJ"),
+    ],
+)
+def test_resposta_do_modelo_vira_texto_simples(entrada: str, esperado: str) -> None:
+    assert to_plain_text(entrada) == esperado
+
+
+@pytest.mark.parametrize(
+    ("message", "memories", "expected"),
+    [
+        # Regra com assunto: vale para o assunto e a fonte entra na própria consulta.
+        (
+            "Qual é o próximo jogo do Corinthians?",
+            ["Sempre use o site meu Timão para jogos do Corinthians"],
+            {"source": "meu Timão", "in_query": True},
+        ),
+        (
+            "Qual é o próximo jogo do Palmeiras?",
+            ["Sempre use o site meu Timão para jogos do Corinthians"],
+            None,
+        ),
+        # Regra sem assunto: vale como preferência de ordem em qualquer busca, sem entrar na consulta.
+        (
+            "Qual é o próximo jogo do Corinthians?",
+            ["Sempre olhe primeiro no meu Timão.com"],
+            {"source": "Timão.com", "in_query": False},
+        ),
+        # Domínio escrito por extenso é reconhecido.
+        (
+            "Qual é o próximo jogo do Corinthians?",
+            ["Sempre use o site meutimao.com.br quando eu perguntar sobre o Corinthians"],
+            {"source": "meutimao.com.br", "in_query": True},
+        ),
+        # Memória que não é regra não muda nada.
+        (
+            "Qual é o próximo jogo do Corinthians?",
+            ["eu moro em Itapecerica da Serra", "prefiro café sem açúcar"],
+            None,
+        ),
+    ],
+)
+def test_memoria_orienta_as_ferramentas(
+    message: str, memories: list[str], expected: dict | None
+) -> None:
+    """As “guidelines” salvas na memória alimentam a busca, não só o prompt do modelo."""
+    assert memory_source_hint(message, memories) == expected

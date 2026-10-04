@@ -11,8 +11,13 @@ services:
       STT_ENGINE: ${STT_ENGINE:-whisper}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
-      # 0 = usa todos os núcleos da máquina.
+      # Núcleos dedicados ao Whisper (0 = todos). Em máquina fraca use 2: o modelo de linguagem e o
+      # sintetizador de voz disputam a mesma CPU.
       WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-0}
+      # Feixes do decoder (1 = guloso; 5 = padrão, bem mais preciso em fala espontânea).
+      WHISPER_BEAM_SIZE: ${WHISPER_BEAM_SIZE:-5}
+      # Opcional: frase que enviesa o reconhecedor (nomes, jargão). Vazio = nome + alcunhas.
+      WHISPER_INITIAL_PROMPT: ${WHISPER_INITIAL_PROMPT:-}
       # O modelo do Whisper fica no volume persistente (baixa uma única vez).
       WHISPER_CACHE_DIR: /data/whisper
       TTS_URL: http://kokoro:8880

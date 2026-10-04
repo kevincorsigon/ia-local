@@ -29,3 +29,15 @@ assistant:
   conversation_seconds: 60
   max_history_turns: 8
   session_ttl_minutes: 30
+  # O que o assistente consegue fazer. Este catálogo vai no prompt do sistema (o modelo lê e pode
+  # listar quando perguntarem “quais ferramentas você tem?”) e é o mesmo conteúdo de
+  # GET /api/capabilities. Edite aqui para anunciar outra capacidade — e só o que estiver aqui.
+  capabilities:
+    - title: Clima e previsão do tempo
+      detail: "previsão dos próximos 7 dias de uma cidade — ex.: “como fica o tempo em Itapecerica da Serra amanhã?”"
+    - title: Esportes
+      detail: "próximos jogos e resultados recentes — ex.: “quando é o próximo jogo do Corinthians?”"
+    - title: Pesquisa na internet
+      detail: "notícias, preços e cotações atuais em sites reais — ex.: “pesquisa na internet o preço do dólar”"
+    - title: Memória
+      detail: "guardar e listar o que você pede para eu lembrar — ex.: “grave que eu moro em Itapecerica da Serra”"

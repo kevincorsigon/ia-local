@@ -284,6 +284,123 @@ def test_chat_de_clima_reaproveita_a_cidade_da_sessao(client, external) -> None:
     assert calls.unmatched == []
 
 
+def test_capabilities_lista_as_ferramentas(client, external) -> None:
+    """O catálogo fica registrado na API — o mesmo que o modelo recebe no prompt."""
+    external({})
+
+    payload = client.get("/api/capabilities").json()
+
+    titulos = [item["title"] for item in payload["capabilities"]]
+    assert payload["assistant_name"] == main.ASSISTANT_NAME
+    assert len(titulos) >= 4
+    assert any("Clima" in titulo for titulo in titulos)
+    assert any("Pesquisa na internet" in titulo for titulo in titulos)
+    assert any("Memória" in titulo for titulo in titulos)
+
+
+def test_prompt_do_modelo_traz_o_catalogo(client, external) -> None:
+    """O modelo precisa saber quais ferramentas existem para poder listá-las sob demanda."""
+    calls = external({CHAT_ROUTE: ollama_reply("Consigo ver o clima e pesquisar na internet.")})
+
+    client.post("/api/chat", json={"message": "Quais ferramentas você tem?"})
+
+    sistema = calls.payloads(CHAT_ROUTE)[0]["messages"][0]["content"]
+    assert "Ferramentas que você tem" in sistema
+    assert "Clima" in sistema
+    assert "Pesquisa na internet" in sistema
+    assert "Memória" in sistema
+    assert "Não invente outras capacidades" in sistema
+
+
+def test_chat_remove_o_markdown_da_resposta(client, external) -> None:
+    """O balão mostra o texto literal e a voz leria os asteriscos: a resposta sai em texto simples."""
+    external(
+        {
+            CHAT_ROUTE: ollama_reply(
+                "Eu tenho disponível: 🚀\n\n*   **Clima:** 🙂 previsão de 7 dias\n*   **Esportes:** ⚽ próximos jogos"
+            )
+        }
+    )
+
+    payload = client.post("/api/chat", json={"message": "Quais ferramentas você tem?"}).json()
+
+    assert "*" not in payload["answer"]
+    assert payload["answer"] == (
+        "Eu tenho disponível:\n\n- Clima: previsão de 7 dias\n- Esportes: próximos jogos"
+    )
+
+
+def test_catalogo_usa_o_padrao_sem_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "ASSISTANT_SETTINGS", {})
+
+    assert main.load_capabilities() == main.DEFAULT_CAPABILITIES
+
+
+def test_catalogo_le_do_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "ASSISTANT_SETTINGS",
+        {"capabilities": [{"title": "Rádio", "detail": "tocar música"}]},
+    )
+
+    assert main.load_capabilities() == [{"title": "Rádio", "detail": "tocar música"}]
+
+
+def test_catalogo_ignora_entradas_incompletas(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "ASSISTANT_SETTINGS",
+        {"capabilities": [{"title": "Sem detalhe"}, {"detail": "sem título"}, "texto solto"]},
+    )
+
+    assert main.load_capabilities() == main.DEFAULT_CAPABILITIES
+
+
+def test_chat_de_clima_aproveita_a_cidade_corrigida(client, external) -> None:
+    """Falha de geocodificação → a próxima fala com o nome corrigido volta para o clima.
+
+    Antes, “Itapcerica da Serra, São Paulo” caía na conversa livre e o modelo inventava uma
+    previsão com números que nunca vieram de ferramenta nenhuma.
+    """
+    tentativas = {"n": 0}
+
+    def geocodifica(request: httpx.Request) -> httpx.Response:
+        tentativas["n"] += 1
+        # A primeira grafia (com erro) não existe; a corrigida sim.
+        if tentativas["n"] == 1:
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(200, json=GEO_REPLY)
+
+    calls = external(
+        {
+            GEO_ROUTE: geocodifica,
+            FORECAST_ROUTE: lambda request: httpx.Response(200, json=FORECAST_REPLY),
+            CHAT_ROUTE: ollama_reply("Vai chover nesta semana."),
+        }
+    )
+
+    sessao = {"session_id": "teste-clima-correcao"}
+    errado = client.post(
+        "/api/chat",
+        json={"message": "qual a previsão do tempo em Itapcerica da Serra", **sessao},
+    ).json()
+
+    assert errado["used_tools"] == ["weather"]
+    assert "Não encontrei uma cidade brasileira" in errado["answer"]
+    assert errado["sources"] == []
+    # Nada foi ao modelo: nenhuma previsão inventada.
+    assert calls.urls(CHAT_ROUTE) == []
+
+    certo = client.post(
+        "/api/chat", json={"message": "Itapcerica da Serra, São Paulo", **sessao}
+    ).json()
+
+    assert certo["used_tools"] == ["weather"]
+    assert certo["sources"], "a fala com a cidade corrigida deveria consultar o clima"
+    assert len(calls.urls(CHAT_ROUTE)) == 1
+    assert calls.unmatched == []
+
+
 def test_chat_de_clima_fora_do_brasil_nao_inventa(client, external) -> None:
     external({GEO_ROUTE: lambda request: httpx.Response(200, json={"results": [{"name": "Lisboa", "country_code": "PT"}]})})
 
@@ -397,6 +514,74 @@ def test_chat_de_pesquisa_usa_a_proxima_fala_como_consulta(client, external, mon
     assert resposta["used_tools"] == ["web_search"]
     assert calls.unmatched == []
     assert parse_qs(urlparse(calls.urls(BRAVE_ROUTE)[0]).query)["q"][0] == "qual a capital da Austrália"
+
+
+def test_memoria_orienta_a_ferramenta_de_busca(client, external, monkeypatch) -> None:
+    """“Guideline” salva na memória entra na consulta e na ordem das fontes."""
+    monkeypatch.setattr(tools, "BRAVE_SEARCH_API_KEY", "chave-de-teste")
+    client.post(
+        "/api/memories",
+        json={"text": "Sempre use o site meutimao.com.br quando eu perguntar sobre o Corinthians"},
+    )
+    calls = external(
+        {
+            BRAVE_ROUTE: lambda request: httpx.Response(
+                200,
+                json={
+                    "web": {
+                        "results": [
+                            {
+                                "title": "Outro site",
+                                "url": "https://exemplo.com/a",
+                                "description": "Nada a ver.",
+                            },
+                            {
+                                "title": "Meu Timão",
+                                "url": "https://meutimao.com.br/jogos",
+                                "description": "Próximo jogo.",
+                            },
+                        ]
+                    }
+                },
+            ),
+            CHAT_ROUTE: ollama_reply("O próximo jogo é sábado."),
+        }
+    )
+
+    payload = client.post(
+        "/api/chat", json={"message": "Qual é o próximo jogo do Corinthians?"}
+    ).json()
+
+    assert payload["used_tools"] == ["sports"]
+    assert "meutimao.com.br" in calls.urls(BRAVE_ROUTE)[0]
+    assert payload["sources"][0]["url"] == "https://meutimao.com.br/jogos"
+    assert calls.unmatched == []
+
+
+def test_memoria_sem_fonte_nao_desvia_a_busca(client, external, monkeypatch) -> None:
+    """Memória que não manda usar fonte não entra na consulta."""
+    monkeypatch.setattr(tools, "BRAVE_SEARCH_API_KEY", "chave-de-teste")
+    client.post("/api/memories", json={"text": "eu moro em Itapecerica da Serra"})
+    calls = external(
+        {
+            BRAVE_ROUTE: lambda request: httpx.Response(
+                200,
+                json={
+                    "web": {
+                        "results": [
+                            {"title": "Dólar", "url": "https://exemplo.com/d", "description": "Hoje."}
+                        ]
+                    }
+                },
+            ),
+            CHAT_ROUTE: ollama_reply("O dólar está em alta."),
+        }
+    )
+
+    client.post("/api/chat", json={"message": "Pesquise notícias de hoje sobre o mercado."})
+
+    assert "itapecerica" not in calls.urls(BRAVE_ROUTE)[0].casefold()
+    assert calls.unmatched == []
 
 
 def test_chat_de_esporte_usa_pesquisa_esportiva(client, external, monkeypatch) -> None:

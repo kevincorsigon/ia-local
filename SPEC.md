@@ -141,6 +141,8 @@ O reconhecimento precisa funcionar localmente. A implementação pode usar OpenW
 | `POST /api/transcribe` | áudio WebM/WAV; `?scan_wake=true` acrescenta a alcunha detectada | `{text, confidence, wake?}` | fala para texto e ativação por voz |
 | `POST /api/speak` | `{text}` | áudio WAV | texto para fala |
 | `GET /api/config/public` | — | nome e opções visuais seguras | personalização da UI |
+| `GET /api/capabilities` | — | catálogo das ferramentas (clima, esportes, busca, memória) | o modelo anunciar o que consegue fazer |
+| `GET /api/session/{id}` | — | histórico recente da sessão | repor a conversa na UI ao recarregar |
 | `GET /api/memories` | — | lista do que está guardado | transparência do storage |
 | `POST /api/memories` | `{text}` | registro criado | gravar sem passar pelo chat |
 | `DELETE /api/memories/{id}` | — | `{removed}` | apagar um item guardado |

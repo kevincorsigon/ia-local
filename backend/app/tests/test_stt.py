@@ -22,10 +22,68 @@ def test_engine_informa_o_motor_em_uso() -> None:
 def test_describe_traz_motor_modelo_e_disponibilidade() -> None:
     descricao = stt.describe()
 
-    assert set(descricao) == {"engine", "model", "compute_type", "cpu_threads", "available"}
+    assert {"engine", "model", "compute_type", "cpu_threads", "available"} <= set(descricao)
     assert descricao["engine"] == stt.engine()
     assert descricao["model"]
     assert isinstance(descricao["available"], bool)
+
+
+def test_dominio_vira_o_prompt_do_whisper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """O nome e as alcunhas enviesam o decoder — é o que evita “Kunica” virar “cônica”."""
+    monkeypatch.setattr(stt, "WHISPER_INITIAL_PROMPT", "")
+    stt.set_domain_terms(["Kunica", "TVzinha", "  "])
+
+    prompt = stt._initial_prompt()
+
+    assert prompt is not None
+    assert "Kunica" in prompt and "TVzinha" in prompt
+    assert "  " not in prompt
+
+    stt.set_domain_terms([])
+    assert stt._initial_prompt() is None
+
+
+def test_prompt_do_whisper_pode_vir_do_ambiente(monkeypatch: pytest.MonkeyPatch) -> None:
+    """O texto do `.env` (cidades) entra junto do vocabulário do assistente, não no lugar dele."""
+    monkeypatch.setattr(stt, "WHISPER_INITIAL_PROMPT", "Nomes de lugares: Itapecerica da Serra.")
+    stt.set_domain_terms(["Kunica"])
+    try:
+        prompt = stt._initial_prompt()
+    finally:
+        stt.set_domain_terms([])
+
+    assert prompt is not None
+    assert "Itapecerica da Serra" in prompt
+    assert "Kunica" in prompt
+
+
+def test_whisper_transcreve_com_beam_e_vocabulario(monkeypatch: pytest.MonkeyPatch) -> None:
+    """beam_size=1 (guloso, padrão antigo) derrubava a precisão; o vocabulário precisa chegar."""
+    pytest.importorskip("numpy")
+    chamadas: list[dict] = []
+
+    class Segmento:
+        text = " olá"
+        avg_logprob = -0.1
+
+    class ModeloFalso:
+        def transcribe(self, samples, **kwargs):
+            chamadas.append(kwargs)
+            return [Segmento()], None
+
+    monkeypatch.setattr(stt, "_load_whisper", lambda: ModeloFalso())
+    monkeypatch.setattr(stt, "WHISPER_INITIAL_PROMPT", "")
+    stt.set_domain_terms(["Kunica"])
+    try:
+        texto, _confianca = stt._transcribe_whisper(b"\x00\x00" * 16000)
+    finally:
+        stt.set_domain_terms([])
+
+    assert chamadas[0]["beam_size"] == stt.WHISPER_BEAM_SIZE
+    assert chamadas[0]["beam_size"] >= 2
+    assert chamadas[0]["language"] == "pt"
+    assert "Kunica" in chamadas[0]["initial_prompt"]
+    assert texto == "olá"
 
 
 def test_audio_vazio_nao_carrega_modelo(monkeypatch: pytest.MonkeyPatch) -> None:
