@@ -15,6 +15,7 @@ const debugToggle = document.querySelector("#debug-toggle");
 const debugClose = document.querySelector("#debug-close");
 const debugClear = document.querySelector("#debug-clear");
 const debugCopy = document.querySelector("#debug-copy");
+const fullscreenToggle = document.querySelector("#fullscreen-toggle");
 const chatToggle = document.querySelector("#chat-toggle");
 const chatClose = document.querySelector("#chat-close");
 const chatPanel = document.querySelector("#chat-panel");
@@ -25,12 +26,13 @@ const face = document.querySelector("#face");
 const stateLabel = document.querySelector("#state-label");
 const connection = document.querySelector("#connection");
 const assistantName = document.querySelector("#assistant-name");
-const sessionStorageKey = "assistant-session-id";
-let sessionId = sessionStorage.getItem(sessionStorageKey);
-if (!sessionId) {
-  sessionId = crypto.randomUUID();
-  sessionStorage.setItem(sessionStorageKey, sessionId);
-}
+// O identificador da sessão fica no localStorage (não no sessionStorage): assim a conversa
+// sobrevive a recarregar a página e a fechar/reabrir a aba, dentro do TTL do backend.
+const sessionKey = "assistant-session-id";
+const chatOpenKey = "assistant-chat-open";
+let sessionId = localStorage.getItem(sessionKey);
+if (!sessionId) sessionId = crypto.randomUUID();
+localStorage.setItem(sessionKey, sessionId);
 let recorder = null;
 let recordingStream = null;
 let recordingChunks = [];
@@ -189,12 +191,13 @@ function resetMicLevel() {
   setMicLevel(0);
 }
 
-function setChatOpen(open) {
+function setChatOpen(open, { focus = true, remember = true } = {}) {
   terminal.classList.toggle("chat-open", open);
   chatToggle.setAttribute("aria-expanded", String(open));
   chatPanel.setAttribute("aria-hidden", String(!open));
   chatPanel.inert = !open;
-  if (open) {
+  if (remember) localStorage.setItem(chatOpenKey, String(open));
+  if (open && focus) {
     window.setTimeout(() => input.focus(), 240);
   }
 }
@@ -206,7 +209,7 @@ function setDebugOpen(open) {
   debugPanel.inert = !open;
 }
 
-setChatOpen(false);
+setChatOpen(false, { focus: false, remember: false });
 setDebugOpen(false);
 
 function setState(state, label) {
@@ -239,6 +242,23 @@ function addBubble(role, text) {
   conversation.append(bubble);
   conversation.scrollTop = conversation.scrollHeight;
   return bubble;
+}
+
+// Recupera a conversa da sessão atual no backend: são as mesmas falas que o modelo usa como
+// contexto, então recarregar a página não “apaga” o que já foi conversado.
+async function restoreConversation() {
+  try {
+    const response = await fetch(`/api/session/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    for (const item of messages) {
+      if (item?.content) addBubble(item.role, item.content);
+    }
+    if (messages.length) log(`conversa restaurada (${messages.length} mensagens da sessão)`);
+  } catch (error) {
+    logWarn("não consegui restaurar a conversa:", error);
+  }
 }
 
 function mediaRecorderOptions() {
@@ -586,19 +606,43 @@ function finishPlayback() {
   showReadyState();
 }
 
-// Divide a resposta em trechos faláveis (frases). Sintetizar o primeiro trecho leva ~1,3 s
-// enquanto o texto inteiro levaria ~4 s — a fala começa bem antes, no mesmo total.
-function splitForSpeech(text, maxChars = 220) {
+// Kokoro sintetiza em CPU: um trecho de até 220 caracteres leva ~1,3 s para virar áudio.
+// Para a fala começar quase junto com o texto, o PRIMEIRO trecho é curto (uma frase) e os
+// seguintes usam o teto maior — eles são sintetizados enquanto o anterior toca, então o tempo
+// total não muda, mas a primeira palavra sai bem antes. Frases gigantes (sem pontuação) são
+// cortadas perto do limite, sempre em espaço, para nenhum trecho inicial travar a fala.
+const FIRST_SPEECH_CHARS = 120;
+const SPEECH_CHUNK_CHARS = 220;
+
+function cutLongSentence(sentence, limit) {
+  if (sentence.length <= limit) return [sentence];
+  const pieces = [];
+  let rest = sentence;
+  while (rest.length > limit) {
+    const corte = rest.lastIndexOf(" ", limit);
+    const posicao = corte > limit * 0.5 ? corte : limit;
+    pieces.push(rest.slice(0, posicao).trim());
+    rest = rest.slice(posicao).trim();
+  }
+  if (rest) pieces.push(rest);
+  return pieces;
+}
+
+function splitForSpeech(text, maxChars = SPEECH_CHUNK_CHARS) {
+  const primeiroLimite = Math.min(FIRST_SPEECH_CHARS, maxChars);
   const partes = text
     .split(/(?<=[.!?…])\s+|\n+/)
     .map((parte) => parte.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap((frase) => cutLongSentence(frase, primeiroLimite));
   const chunks = [];
   let atual = "";
+  let limite = primeiroLimite;
   for (const parte of partes) {
-    if (atual && atual.length + parte.length + 1 > maxChars) {
+    if (atual && atual.length + parte.length + 1 > limite) {
       chunks.push(atual);
       atual = parte;
+      limite = maxChars;
     } else {
       atual = atual ? `${atual} ${parte}` : parte;
     }
@@ -810,6 +854,9 @@ micSelect?.addEventListener("change", async () => {
 
 navigator.mediaDevices?.addEventListener?.("devicechange", () => void refreshMicDevices());
 void refreshMicDevices();
+// Reabre o painel como o usuário deixou e devolve o histórico da sessão (mesmo contexto do modelo).
+setChatOpen(localStorage.getItem(chatOpenKey) === "true", { focus: false });
+void restoreConversation();
 log("interface iniciada — chat, voz e painel de debug prontos");
 chatToggle.addEventListener("click", () => setChatOpen(!terminal.classList.contains("chat-open")));
 chatClose.addEventListener("click", () => setChatOpen(false));
@@ -834,6 +881,56 @@ debugCopy.addEventListener("click", async () => {
     logWarn("não consegui copiar os logs:", error);
   }
 });
+
+// --- Tela cheia ---------------------------------------------------------------------
+// O "gráfico" (barras) do canto superior esquerdo é o botão que alterna a tela cheia do console.
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function updateFullscreenButton() {
+  if (!fullscreenToggle) return;
+  const active = Boolean(fullscreenElement());
+  fullscreenToggle.setAttribute("aria-pressed", String(active));
+  const label = active ? "Sair da tela cheia" : "Abrir em tela cheia";
+  fullscreenToggle.title = label;
+  fullscreenToggle.setAttribute("aria-label", label);
+}
+
+function toggleFullscreen() {
+  try {
+    if (fullscreenElement()) {
+      // O Escape também sai; aqui tratamos o toque no botão.
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) void Promise.resolve(exit.call(document)).catch(() => {});
+      return;
+    }
+    const request = terminal.requestFullscreen || terminal.webkitRequestFullscreen;
+    if (!request) return;
+    void Promise.resolve(request.call(terminal))
+      .then(() => log("tela cheia ativada"))
+      .catch((error) => logWarn("não consegui abrir em tela cheia:", error));
+  } catch (error) {
+    logWarn("tela cheia indisponível:", error);
+  }
+}
+
+if (fullscreenToggle) {
+  const request = terminal.requestFullscreen || terminal.webkitRequestFullscreen;
+  const enabled = Boolean((document.fullscreenEnabled ?? document.webkitFullscreenEnabled) && request);
+  if (enabled) {
+    fullscreenToggle.addEventListener("click", toggleFullscreen);
+    // O estado pode mudar também pelo Escape ou pela tecla F11 do navegador.
+    document.addEventListener("fullscreenchange", updateFullscreenButton);
+    document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+    updateFullscreenButton();
+  } else {
+    // Navegador sem a API (ou dentro de um iframe restrito): mantém o visual, sem ação.
+    fullscreenToggle.disabled = true;
+    fullscreenToggle.title = "Tela cheia não disponível neste navegador";
+    fullscreenToggle.setAttribute("aria-label", fullscreenToggle.title);
+  }
+}
 
 input.addEventListener("input", () => {
   input.style.height = "auto";
@@ -873,7 +970,7 @@ async function sendMessage(rawMessage) {
     );
     if (result.session_id && result.session_id !== sessionId) {
       sessionId = result.session_id;
-      sessionStorage.setItem(sessionStorageKey, sessionId);
+      localStorage.setItem(sessionKey, sessionId);
     }
     pending.textContent = result.answer;
     if (result.sources?.length) {

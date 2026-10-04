@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import wave
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -133,6 +134,45 @@ def test_chat_mantem_contexto_e_isola_sessoes(client, external) -> None:
     assert [item["role"] for item in enviados[2]["messages"]] == ["system", "user"]
 
 
+def test_chat_registra_resposta_direta_no_contexto(client, external) -> None:
+    """A resposta direta da ferramenta (pedir a cidade) entra no contexto que o modelo recebe."""
+    calls = external({CHAT_ROUTE: ollama_reply("Certo, anotei.")})
+
+    sessao = {"session_id": "teste-contexto-direto"}
+    pedido = client.post("/api/chat", json={"message": "Como fica o tempo hoje?", **sessao}).json()
+    assert "preciso saber a cidade" in pedido["answer"]
+
+    client.post("/api/chat", json={"message": "obrigado", **sessao})
+
+    enviados = calls.payloads(CHAT_ROUTE)[0]
+    assert [item["role"] for item in enviados["messages"]] == ["system", "user", "assistant", "user"]
+    assert "preciso saber a cidade" in enviados["messages"][2]["content"]
+
+
+def test_session_endpoint_devolve_o_historico(client, external) -> None:
+    """A interface usa isto para redesenhar a conversa e manter o mesmo contexto do modelo."""
+    external({CHAT_ROUTE: ollama_reply("Olá!")})
+
+    sessao = {"session_id": "teste-historico"}
+    client.post("/api/chat", json={"message": "oi", **sessao})
+
+    payload = client.get("/api/session/teste-historico").json()
+
+    assert payload["session_id"] == "teste-historico"
+    assert payload["messages"] == [
+        {"role": "user", "content": "oi"},
+        {"role": "assistant", "content": "Olá!"},
+    ]
+
+
+def test_session_endpoint_de_sessao_desconhecida_e_vazio(client, external) -> None:
+    external({})
+
+    payload = client.get("/api/session/nao-existe").json()
+
+    assert payload["messages"] == []
+
+
 def test_chat_gera_session_id_quando_vem_sem_um(client, external) -> None:
     external({CHAT_ROUTE: ollama_reply("Olá!")})
 
@@ -218,6 +258,32 @@ def test_chat_de_clima_de_cidade_conhecida_nao_pede_escolha(client, external) ->
     assert calls.unmatched == []
 
 
+def test_chat_de_clima_reaproveita_a_cidade_da_sessao(client, external) -> None:
+    """“a previsão do tempo lá?” usa a cidade já falada na sessão, sem pedir de novo."""
+    calls = external(
+        {
+            GEO_ROUTE: lambda request: httpx.Response(200, json=GEO_REPLY),
+            FORECAST_ROUTE: lambda request: httpx.Response(200, json=FORECAST_REPLY),
+            CHAT_ROUTE: ollama_reply("Vai chover nesta semana."),
+        }
+    )
+
+    sessao = {"session_id": "teste-clima-contexto"}
+    client.post(
+        "/api/chat",
+        json={"message": "Como fica o tempo esta semana em Itapecerica da Serra?", **sessao},
+    )
+    payload = client.post("/api/chat", json={"message": "a previsão do tempo lá", **sessao}).json()
+
+    assert payload["used_tools"] == ["weather"]
+    assert payload["sources"] == [{"title": "Open-Meteo — previsão do tempo", "url": "https://open-meteo.com/"}]
+    assert "preciso saber a cidade" not in payload["answer"]
+    # As duas perguntas geocodificaram a mesma cidade (a segunda reaproveitou a lembrança).
+    geocodificadas = [url for url in calls.urls(GEO_ROUTE) if "itapecerica" in url.casefold()]
+    assert len(geocodificadas) == 2
+    assert calls.unmatched == []
+
+
 def test_chat_de_clima_fora_do_brasil_nao_inventa(client, external) -> None:
     external({GEO_ROUTE: lambda request: httpx.Response(200, json={"results": [{"name": "Lisboa", "country_code": "PT"}]})})
 
@@ -274,6 +340,63 @@ def test_chat_de_pesquisa_devolve_fontes_e_nao_vaza_chave(client, external, monk
     assert payload["sources"] == [{"title": "Manchete A", "url": "https://exemplo.com/a"}]
     assert "chave-super-secreta" not in response.text
     assert calls.unmatched == []
+
+
+def test_chat_de_pesquisa_remove_o_comando_da_consulta(client, external, monkeypatch) -> None:
+    """“pesquisa na internet X” procura por “X”, não pelo comando inteiro."""
+    monkeypatch.setattr(tools, "BRAVE_SEARCH_API_KEY", "chave-de-teste")
+    calls = external(
+        {
+            BRAVE_ROUTE: lambda request: httpx.Response(
+                200,
+                json={
+                    "web": {
+                        "results": [
+                            {"title": "Capital", "url": "https://exemplo.com/a", "description": "Camberra."}
+                        ]
+                    }
+                },
+            ),
+            CHAT_ROUTE: ollama_reply("A capital é Camberra."),
+        }
+    )
+
+    client.post("/api/chat", json={"message": "pesquisa na internet qual a capital da Austrália"})
+
+    consulta = parse_qs(urlparse(calls.urls(BRAVE_ROUTE)[0]).query)["q"][0]
+    assert consulta == "qual a capital da Austrália"
+
+
+def test_chat_de_pesquisa_usa_a_proxima_fala_como_consulta(client, external, monkeypatch) -> None:
+    """Comando sozinho pergunta o termo e usa a próxima fala como busca (mesma sessão)."""
+    monkeypatch.setattr(tools, "BRAVE_SEARCH_API_KEY", "chave-de-teste")
+    calls = external(
+        {
+            BRAVE_ROUTE: lambda request: httpx.Response(
+                200,
+                json={
+                    "web": {
+                        "results": [
+                            {"title": "Capital", "url": "https://exemplo.com/a", "description": "Camberra."}
+                        ]
+                    }
+                },
+            ),
+            CHAT_ROUTE: ollama_reply("A capital é Camberra."),
+        }
+    )
+
+    sessao = {"session_id": "teste-busca-contexto"}
+    pedido = client.post("/api/chat", json={"message": "pesquisa na internet", **sessao}).json()
+    assert pedido["used_tools"] == ["web_search"]
+    assert "que eu pesquise na internet" in pedido["answer"]
+    assert calls.urls(BRAVE_ROUTE) == []
+
+    resposta = client.post("/api/chat", json={"message": "qual a capital da Austrália", **sessao}).json()
+
+    assert resposta["used_tools"] == ["web_search"]
+    assert calls.unmatched == []
+    assert parse_qs(urlparse(calls.urls(BRAVE_ROUTE)[0]).query)["q"][0] == "qual a capital da Austrália"
 
 
 def test_chat_de_esporte_usa_pesquisa_esportiva(client, external, monkeypatch) -> None:

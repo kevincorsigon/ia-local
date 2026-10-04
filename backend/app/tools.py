@@ -58,7 +58,11 @@ def route_question(message: str) -> str | None:
         return "weather"
     if re.search(r"\b(pr[oó]ximo jogo|jogo do|jogos do|corinthians|placar|campeonato|partida)\b", text):
         return "sports"
-    if re.search(r"\b(not[ií]cia|not[ií]cias|pesquise|pesquisa|procure|buscar|cot[aã]?[cç][aã]o|pre[cç]o|lan[cç]amento|atualizado|atualizada|atual)\b", text):
+    if re.search(
+        r"\b(not[ií]cia|not[ií]cias|pesquise|pesquisa|pesquisar|procure|procurar|busca|busque|buscar|"
+        r"google|cot[aã]?[cç][aã]o|pre[cç]o|lan[cç]amento|atualizado|atualizada|atual)\b",
+        text,
+    ):
         return "web_search"
     return None
 
@@ -68,6 +72,29 @@ def extract_memory_text(message: str) -> str:
     text = _MEMORY_PREFIX.sub("", message.strip(), count=1)
     text = _MEMORY_AFTER_QUE.sub("", text)
     text = _MEMORY_SUFFIX.sub("", text)
+    return re.sub(r"\s+", " ", text).strip(" .,;:-")
+
+
+# Comandos que acionam a pesquisa na internet (“pesquisa na internet”, “pesquise no google”,
+# “buscar”, “google”). O que vier DEPOIS é a consulta; o comando não deve entrar na busca.
+_SEARCH_PREFIX = re.compile(
+    r"^\s*(?:por\s+favor,?\s*)?(?:"
+    r"(?:pesquis\w+|procur\w+|busc\w+|googl\w+)"
+    r"(?:\s+(?:na|no|pela|pelo|por|em)\s+(?:internet|google|web|rede|net))?"
+    r"|(?:na|no)\s+(?:internet|google|web)"
+    r")\s*[:,.!-]*\s*",
+    re.IGNORECASE,
+)
+
+
+def extract_search_text(message: str) -> str:
+    """Remove o comando de pesquisa e devolve só o termo a buscar.
+
+    Sem isso, “pesquisa na internet quem ganhou o jogo” ia inteiro como termo de busca e o
+    resultado vinha pior. Quando o comando vem sozinho, o texto fica vazio: aí a interface
+    pergunta o que pesquisar e arma a próxima fala (ver ``main.chat``).
+    """
+    text = _SEARCH_PREFIX.sub("", message.strip(), count=1)
     return re.sub(r"\s+", " ", text).strip(" .,;:-")
 
 
@@ -81,11 +108,55 @@ _TIME_HINTS = (
     r"|(?:de|à|pela|a|esta|essa|nesta)\s+(?:manh[ãa]|tarde|noite)"
     r"|(?:esta|essa|nesta|na|de)\s+semana"
     r"|semana que vem"
-    r"|(?:(?:no|de)\s+)?(?:fim|final)\s+de\s+semana"
+    r"|(?:(?:no|de|esse|essa|este|esta|nesse|nessa|neste|nesta)\s+)?(?:fim|final)\s+de\s+semana"
     r")"
 )
 _LOCATION_LEADING_TIME = re.compile(rf"^(?:{_TIME_HINTS}|semana)\s+(?:em|no|na|de|para|pra)\s+", re.IGNORECASE)
+# Artigo/demonstrativo antes do tempo (“para o fim de semana em X”, “nessa semana em X”).
+_LOCATION_LEADING_ARTICLE = re.compile(
+    r"^\s*(?:o|a|os|as|esse|essa|este|esta|nesse|nessa|neste|nesta)\s+", re.IGNORECASE
+)
 _LOCATION_TRAILING_TIME = re.compile(rf"[\s,]+(?:(?:em|no|na|de|para|pra)\s+)?{_TIME_HINTS}\s*$", re.IGNORECASE)
+
+# Siglas de estado (UF) que podem vir coladas ao nome da cidade ("Itapecerica da Serra SP").
+# A geocodificação da Open-Meteo entende melhor só o nome, então a sigla final é removida.
+_UF_CODES = frozenset(
+    "ac al ap am ba ce df es go ma mt ms mg pa pb pr pe pi rj rn rs ro rr sc sp se to".split()
+)
+_STATE_SUFFIX = re.compile(rf"\s+(?:{'|'.join(sorted(_UF_CODES))})\s*$", re.IGNORECASE)
+
+# Palavras que NÃO fazem parte do nome da cidade quando a fala não traz preposição
+# ("tempo Itapecerica da Serra"): verbos/perguntas de clima, palavras de tempo e
+# conectivos. Artigos/preposições curtas ("de", "da", "do") ficam FORA daqui de
+# propósito, porque aparecem dentro de nomes ("Campos do Jordão", "Rio de Janeiro").
+_LOCATION_STOPWORDS = frozenset(
+    [
+        # pergunta e conectivos de conversa
+        "com", "como", "qual", "quais", "quanto", "quanta", "quantos", "quantas",
+        "quando", "onde", "que", "sera", "será", "serao", "serão", "tem", "ter",
+        "tera", "terá", "estar", "estou", "vou", "durante", "me", "diga", "diz",
+        "fala", "fale", "quero", "queria", "gostaria", "poderia", "pode", "posso",
+        "preciso", "saber", "ver", "veja", "por", "favor", "pra", "para", "pro",
+        "em", "no", "na", "nos", "nas", "e", "eh", "é", "ao", "aos", "à", "às",
+        "o", "a", "os", "as", "um", "uma", "uns", "umas",
+        # clima/tempo
+        "chover", "chove", "chovendo", "chovera", "choverá", "chuva", "chuvas",
+        "previsao", "previsão", "clima", "tempo", "temperatura", "temperaturas",
+        "hoje", "amanha", "amanhã", "ontem", "agora", "depois",
+        "semana", "mes", "mês", "fim", "final", "dia", "dias", "noite", "noites",
+        "tarde", "manha", "manhã", "madrugada",
+        "nessa", "nesta", "nesse", "neste", "esta", "está", "estao", "estão",
+        "essa", "esse", "este", "proximo", "proxima", "próximo", "próxima",
+        "vem", "vira", "fica", "ficou", "ficam", "ficar", "vai", "vao", "vão",
+    ]
+)
+# Um trecho só vale como cidade se tiver ao menos uma palavra "de conteúdo" (não
+# conector e com 3+ letras), para "do", "da" ou "e" soltos não virarem consulta.
+_LOCATION_NOISE = frozenset(
+    "de da do das dos e o a os as em no na nos nas para pra pro com por ao aos à às".split()
+)
+_LOCATION_TOKEN = re.compile(r"[^\W\d_]+", re.UNICODE)
+
 
 
 def _clean_location(raw: str) -> str:
@@ -95,8 +166,12 @@ def _clean_location(raw: str) -> str:
     inteiro (“hoje em São Paulo”) à API de geocodificação e a consulta falhava.
     """
     location = raw.strip(" .,;:-")
-    location = _LOCATION_LEADING_TIME.sub("", location)
+    # Artigo e tempo podem vir encadeados (“para o fim de semana em X” e “nessa semana em X”).
+    for _ in range(2):
+        location = _LOCATION_LEADING_ARTICLE.sub("", location)
+        location = _LOCATION_LEADING_TIME.sub("", location)
     location = _LOCATION_TRAILING_TIME.sub("", location)
+    location = _STATE_SUFFIX.sub("", location)
     return location.strip(" .,;:-")
 
 
@@ -106,7 +181,8 @@ def _fold_name(text: str) -> str:
     return "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
 
 
-def _extract_location(message: str) -> str | None:
+def _location_after_preposition(message: str) -> str | None:
+    """Forma mais comum: a cidade vem depois de em/para/pra/de."""
     for candidate in re.findall(r"\b(?:em|para|pra|de)\s+([^?.!,]+)", message, re.IGNORECASE):
         location = _clean_location(candidate)
         if location:
@@ -114,8 +190,66 @@ def _extract_location(message: str) -> str | None:
     return None
 
 
-async def weather_tool(message: str) -> dict[str, Any]:
+def _location_without_preposition(message: str) -> str | None:
+    """Extrai a cidade de falas em que ela vem sem preposição.
+
+    Medido neste projeto (Vosk/Whisper): “com previsão do tempo Itapecerica da Serra” e
+    “como ficou o tempo essa semana Itapecerica da Serra SP” chegavam à ferramenta sem
+    ``em``/``para`` e o assistente pedia a cidade de novo. Aqui o maior trecho contíguo de
+    palavras que não são de clima/tempo/pergunta é tratado como o nome da cidade — a sigla
+    de estado no fim é descartada depois por ``_clean_location``.
+    """
+    runs: list[list[str]] = []
+    current: list[str] = []
+    for token in _LOCATION_TOKEN.findall(message):
+        if token.casefold() in _LOCATION_STOPWORDS:
+            if current:
+                runs.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        runs.append(current)
+
+    candidates = [
+        _clean_location(" ".join(run))
+        for run in runs
+        if any(word.casefold() not in _LOCATION_NOISE and len(word) >= 3 for word in run)
+    ]
+    candidates = [item for item in candidates if item]
+    if not candidates:
+        return None
+    # O nome da cidade costuma ser o trecho mais longo; empate fica com o primeiro.
+    candidates.sort(key=len, reverse=True)
+    return candidates[0]
+
+
+def _prefer_leftover(primary: str, leftover: str) -> bool:
+    """Prefere o trecho sem preposição quando ele traz mais palavras e termina na forma curta.
+
+    Corrige “Como está o clima no Rio de Janeiro?”: a rota por preposição pegava só
+    “Janeiro” (por causa do “de”), enquanto o fallback encontra “Rio de Janeiro”.
+    """
+    return len(leftover.split()) > len(primary.split()) and _fold_name(leftover).endswith(
+        _fold_name(primary)
+    )
+
+
+def _extract_location(message: str) -> str | None:
+    primary = _location_after_preposition(message)
+    leftover = _location_without_preposition(message)
+    if primary is None:
+        return leftover
+    if leftover and _prefer_leftover(primary, leftover):
+        return leftover
+    return primary
+
+
+async def weather_tool(message: str, *, location_hint: str | None = None) -> dict[str, Any]:
     location = _extract_location(message)
+    if not location and location_hint:
+        # “e a previsão do tempo lá?”: sem cidade na frase, reaproveita a última cidade falada.
+        location = _clean_location(location_hint) or location_hint
     if not location:
         return {
             "text": "Para consultar a previsão do tempo, preciso saber a cidade. Pergunte, por exemplo: ‘Como fica o tempo esta semana em Itapecerica da Serra, SP?’",
@@ -191,6 +325,8 @@ async def weather_tool(message: str) -> dict[str, Any]:
     return {
         "text": f"Previsão de 7 dias para {place.get('name')}, {place.get('admin1', '')}, Brasil (atualizada em {date.today().isoformat()}):\n" + "\n".join(lines),
         "sources": [{"title": "Open-Meteo — previsão do tempo", "url": "https://open-meteo.com/"}],
+        # Nome resolvido da cidade: a camada de cima guarda isso para responder “e lá?” depois.
+        "location": str(place.get("name") or location),
     }
 
 

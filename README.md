@@ -156,10 +156,44 @@ o consumo de RAM sobe (alguns GB) e essa primeira transcrição demora mais.
 
 ### Resposta falada em trechos
 
-O Kokoro sintetiza em CPU: uma resposta inteira leva ~4 s para virar áudio, mas a primeira frase fica
-pronta em ~1,3 s. Por isso o `app.js` divide a resposta em frases, toca a primeira assim que chega e já
-sintetiza a seguinte enquanto fala — o áudio começa quase junto com o texto na tela, no mesmo tempo
-total. O botão **Parar áudio** interrompe a fila inteira.
+O Kokoro sintetiza em CPU: uma resposta inteira leva ~4 s para virar áudio. Para a fala começar
+quase junto com o texto na tela, o `app.js` fatia a resposta em frases e mantém o **primeiro trecho
+curto** (até ~120 caracteres, cortando frases gigantes em espaços); ele toca assim que chega — em
+geral bem antes de 1 s — enquanto já sintetiza o trecho seguinte (até ~220 caracteres). O tempo total
+não muda, mas a primeira palavra sai bem antes. O botão **Parar áudio** interrompe a fila inteira.
+
+### Tela cheia
+
+O “gráfico” de barras no canto superior esquerdo da barra de título é um botão: um clique coloca o
+console em tela cheia e outro clique (ou `Esc`) volta ao normal. Enquanto a tela cheia está ativa, o
+botão fica realçado. Em navegadores que não oferecem a Fullscreen API (ou dentro de um iframe
+restrito), o botão fica desabilitado e o restante da interface segue igual.
+
+### Comando de pesquisa na internet
+
+Digite ou fale **“pesquisa na internet”**, **“pesquisa no google”**, **“pesquise”**, **“busque”** ou
+**“google”** seguido do assunto: o comando sai e só o restante vira a consulta. Ex.:
+“pesquisa na internet qual a capital da Austrália” procura por *qual a capital da Austrália* — e não
+pelo comando inteiro.
+
+Se você falar só o comando (“pesquisa na internet”), o assistente pergunta o que pesquisar e trata a
+**próxima fala** como o termo da busca, na mesma sessão.
+
+### Contexto da conversa
+
+O backend guarda as últimas `max_history_turns` falas de cada sessão (padrão 8, em
+`config/assistant.yaml`) e envia esse histórico ao modelo em toda mensagem — é assim que ele sabe
+que você está falando de algo já comentado. A sessão expira após `session_ttl_minutes` sem uso
+(padrão 30).
+
+Todas as respostas entram no histórico, inclusive as prontas das ferramentas (pedir a cidade, pedir
+o termo da busca), para o modelo nunca ficar com “buracos” do que ele mesmo disse. O identificador
+da sessão fica no `localStorage` do navegador e a interface repõe as bolhas via
+`GET /api/session/<id>` ao abrir a página, então recarregar ou fechar/reabrir a aba mantém a conversa
+— o que você vê é o mesmo contexto que o modelo recebe.
+
+Para começar do zero, limpe os dados do site no navegador (DevTools → Application → Local Storage)
+ou espere o TTL da sessão.
 
 ## Testes
 

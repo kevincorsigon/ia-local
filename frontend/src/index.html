@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#070a08" />
     <title>Assistente local</title>
-    <link rel="stylesheet" href="/style.css?v=10" />
+    <link rel="stylesheet" href="/style.css?v=12" />
   </head>
   <body>
     <main class="app-shell">
       <section class="terminal" aria-label="Console da assistente">
         <header class="topbar">
-          <div class="system-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+          <button id="fullscreen-toggle" class="system-mark" type="button" aria-pressed="false" title="Abrir em tela cheia" aria-label="Abrir em tela cheia"><i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i></button>
           <div class="identity">
             <p class="eyebrow">W-Y PERSONAL INTERFACE</p>
             <h1 id="assistant-name">Kunica</h1>
@@ -63,7 +63,7 @@
         <section id="chat-panel" class="chat-panel" aria-label="Terminal de chat" aria-hidden="true">
           <div class="chat-heading"><span>CANAL // TEXTO</span><button id="chat-close" type="button" aria-label="Fechar chat">×</button></div>
           <section id="conversation" class="conversation" aria-live="polite" aria-label="Conversa">
-            <div class="empty-state" id="empty-state">Canal aberto. As mensagens somem quando a página é recarregada.</div>
+            <div class="empty-state" id="empty-state">Canal aberto. O histórico da conversa volta ao recarregar a página.</div>
           </section>
           <form id="chat-form" class="composer">
             <label class="sr-only" for="message">Sua mensagem</label>
@@ -90,6 +90,6 @@
         </section>
       </section>
     </main>
-    <script src="/app.js?v=10" defer></script>
+    <script src="/app.js?v=12" defer></script>
   </body>
 </html>

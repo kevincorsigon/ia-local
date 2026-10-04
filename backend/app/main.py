@@ -13,7 +13,14 @@ from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from app import memory, stt, wake
-from app.tools import ToolUnavailable, extract_memory_text, route_question, weather_tool, web_search_tool
+from app.tools import (
+    ToolUnavailable,
+    extract_memory_text,
+    extract_search_text,
+    route_question,
+    weather_tool,
+    web_search_tool,
+)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
@@ -179,6 +186,25 @@ async def public_config() -> dict[str, Any]:
     }
 
 
+@app.get("/api/session/{session_id}")
+async def get_session(session_id: str) -> dict[str, Any]:
+    """Histórico recente da sessão, para a interface reconstruir a conversa ao recarregar.
+
+    É o mesmo conteúdo que o modelo recebe como contexto: as falas (pergunta e resposta)
+    viram bolhas no chat, então recarregar a página não faz a conversa “sumir”.
+    """
+    session = SESSIONS.get(session_id)
+    messages = session.get("messages", []) if session else []
+    return {
+        "session_id": session_id,
+        "messages": [
+            {"role": item.get("role"), "content": item.get("content")}
+            for item in messages
+            if item.get("role") in {"user", "assistant"}
+        ],
+    }
+
+
 def append_turn(session: dict[str, Any], history: list[dict[str, str]], message: str, answer: str) -> None:
     """Mantém o contexto curto da sessão e renova o TTL."""
     if MAX_HISTORY_TURNS:
@@ -192,37 +218,52 @@ def append_turn(session: dict[str, Any], history: list[dict[str, str]], message:
     session["updated_at"] = time.monotonic()
 
 
-async def handle_memory(
-    message: str,
-    tool_name: str,
+def respond_direct(
     session: dict[str, Any],
     history: list[dict[str, str]],
-) -> str:
-    """Responde aos pedidos de guardar e de listar informações persistentes."""
+    message: str,
+    answer: str,
+    tool_name: str | None,
+    session_id: str,
+) -> ChatResponse:
+    """Resposta pronta (sem passar pelo modelo), registrada no histórico da sessão.
+
+    Registrar essas falas mantém o contexto coerente: o modelo passa a saber que ele mesmo
+    pediu a cidade (“preciso saber a cidade”) ou o termo da busca, por exemplo.
+    """
+    append_turn(session, history, message, answer)
+    return ChatResponse(
+        answer=answer,
+        used_tools=[tool_name] if tool_name else [],
+        session_id=session_id,
+    )
+
+
+async def handle_memory(message: str, tool_name: str) -> str:
+    """Responde aos pedidos de guardar e de listar informações persistentes.
+
+    Quem registra a fala no histórico é o ``respond_direct`` (em ``chat``), para o contexto
+    incluir todas as respostas — inclusive as de erro.
+    """
     if tool_name == "memory_list":
         try:
             memories = await memory.list_memories()
         except memory.MemoryUnavailable:
             return "Não consegui abrir minhas anotações agora. Tente novamente daqui a pouco."
         if not memories:
-            answer = (
+            return (
                 "Ainda não guardei nenhuma informação. Peça assim: "
                 "‘grave que eu moro em Itapecerica da Serra’."
             )
-        else:
-            listed = "\n".join(f"- {item['text']}" for item in memories)
-            answer = f"Tenho {len(memories)} informação(ões) guardada(s) no volume de dados:\n{listed}"
-        append_turn(session, history, message, answer)
-        return answer
+        listed = "\n".join(f"- {item['text']}" for item in memories)
+        return f"Tenho {len(memories)} informação(ões) guardada(s) no volume de dados:\n{listed}"
 
     fact = extract_memory_text(message)
     if not fact:
-        answer = (
+        return (
             "Entendi que você quer guardar algo, mas não recebi o conteúdo. "
             "Diga, por exemplo: ‘lembre-se que eu prefiro café sem açúcar’."
         )
-        append_turn(session, history, message, answer)
-        return answer
     try:
         record = await memory.add_memory(fact)
     except ValueError:
@@ -230,9 +271,7 @@ async def handle_memory(
     except memory.MemoryUnavailable:
         logger.warning("Memory write failed")
         return "Não consegui guardar essa informação agora. Tente novamente daqui a pouco."
-    answer = f"Guardado: “{record['text']}”. Vou usar isso como base nas próximas conversas."
-    append_turn(session, history, message, answer)
-    return answer
+    return f"Guardado: “{record['text']}”. Vou usar isso como base nas próximas conversas."
 
 
 @app.get("/api/memories")
@@ -302,34 +341,60 @@ async def chat(request: ChatRequest) -> ChatResponse:
     session = SESSIONS.setdefault(session_id, {"messages": [], "updated_at": now})
     history: list[dict[str, str]] = session["messages"]
 
+    # Comando “pesquisa na internet” sozinho: a próxima fala é o que deve ser pesquisado.
+    awaiting_search = bool(session.pop("awaiting_search", False))
     tool_name = route_question(message)
+    if tool_name is None and awaiting_search:
+        tool_name = "web_search"
     tool_result: dict[str, Any] | None = None
     if tool_name in {"memory", "memory_list"}:
-        answer = await handle_memory(message, tool_name, session, history)
-        return ChatResponse(answer=answer, used_tools=[tool_name], session_id=session_id)
+        answer = await handle_memory(message, tool_name)
+        return respond_direct(session, history, message, answer, tool_name, session_id)
     if tool_name == "weather":
         try:
-            tool_result = await weather_tool(message)
+            tool_result = await weather_tool(message, location_hint=session.get("weather_location"))
         except (httpx.HTTPError, KeyError, TypeError, ValueError):
             logger.warning("Weather lookup failed")
-            return ChatResponse(
-                answer="Não consegui consultar a previsão do tempo agora. Tente novamente daqui a pouco.",
-                used_tools=[tool_name],
-                session_id=session_id,
+            return respond_direct(
+                session,
+                history,
+                message,
+                "Não consegui consultar a previsão do tempo agora. Tente novamente daqui a pouco.",
+                tool_name,
+                session_id,
             )
         if not tool_result.get("sources"):
-            return ChatResponse(answer=tool_result["text"], used_tools=[tool_name], session_id=session_id)
+            return respond_direct(session, history, message, tool_result["text"], tool_name, session_id)
+        if tool_result.get("location"):
+            # Guarda a cidade falada para responder “e lá?” / “a previsão do tempo” sem pedir de novo.
+            session["weather_location"] = tool_result["location"]
     elif tool_name in {"sports", "web_search"}:
+        # “pesquisa na internet X” procura por “X”, sem repetir o comando na consulta.
+        query = extract_search_text(message)
+        if tool_name == "web_search" and not query:
+            # Veio só o comando: pergunta o termo e trata a próxima fala como a busca.
+            session["awaiting_search"] = True
+            return respond_direct(
+                session,
+                history,
+                message,
+                "Certo. O que você quer que eu pesquise na internet?",
+                "web_search",
+                session_id,
+            )
         try:
-            tool_result = await web_search_tool(message, sports=tool_name == "sports")
+            tool_result = await web_search_tool(query, sports=tool_name == "sports")
         except ToolUnavailable as exc:
-            return ChatResponse(answer=str(exc), used_tools=[tool_name], session_id=session_id)
+            return respond_direct(session, history, message, str(exc), tool_name, session_id)
         except httpx.HTTPError:
             logger.warning("Web search failed")
-            return ChatResponse(
-                answer="Não consegui consultar informações atuais agora. Tente novamente daqui a pouco.",
-                used_tools=[tool_name],
-                session_id=session_id,
+            return respond_direct(
+                session,
+                history,
+                message,
+                "Não consegui consultar informações atuais agora. Tente novamente daqui a pouco.",
+                tool_name,
+                session_id,
             )
 
     user_content = message
