@@ -1,4 +1,5 @@
 .env
+.env.nuc
 data/
 backend/models/
 __pycache__/
