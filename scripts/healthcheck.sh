@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validação de ponta a ponta do assistente já em execução.
 # Percorre as rotas públicas pela porta publicada (mesmo caminho do navegador),
-# incluindo o ciclo completo de voz: Piper gera o áudio e o Vosk o transcreve.
+# incluindo o ciclo completo de voz: Kokoro gera o áudio e o Vosk o transcreve.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,7 +64,7 @@ chat() {
 step "Containers"
 if "${COMPOSE[@]}" ps --status running | grep -q backend; then
   "${COMPOSE[@]}" ps
-  ok "backend, frontend e piper estão em execução."
+  ok "backend, frontend e Kokoro estão em execução."
 else
   "${COMPOSE[@]}" ps
   fail "os containers não estão em execução; rode ./scripts/bootstrap.sh."
@@ -148,7 +148,7 @@ else
   esac
 fi
 
-step "POST /api/speak — síntese de voz (Piper)"
+step "POST /api/speak — síntese de voz feminina (Kokoro)"
 WAV_FILE="$(mktemp)"
 curl --silent --show-error --max-time 180 -H 'Content-Type: application/json' \
   -d '{"text":"Olá, eu sou a Kunica e estou funcionando sem internet."}' \
@@ -165,7 +165,7 @@ else
   ok "WAV pt-BR gerado com $WAV_BYTES bytes."
 fi
 
-step "POST /api/transcribe — reconhecimento de voz (Vosk) sobre o áudio do Piper"
+step "POST /api/transcribe — reconhecimento de voz (Vosk) sobre o áudio do Kokoro"
 TRANSCRIBE_JSON="$(curl --silent --show-error --max-time 180 -H 'Content-Type: audio/wav' \
   --data-binary "@$WAV_FILE" "$BASE_URL/api/transcribe")"
 TRANSCRIBE_STATUS=$?
@@ -179,6 +179,54 @@ else
     ok "Vosk transcreveu: $TEXT"
   else
     fail "transcrição vazia."
+  fi
+fi
+
+step "Memória persistente no volume Docker"
+if docker volume inspect assistente-local-data >/dev/null 2>&1; then
+  ok "volume assistente-local-data existe no storage do Docker."
+else
+  fail "volume assistente-local-data não encontrado."
+fi
+
+MEMORY_MARKER="healthcheck $(date '+%Y-%m-%d %H:%M:%S') memoria persistente ativa"
+CREATE_JSON="$(curl --silent --show-error --max-time 30 -H 'Content-Type: application/json' \
+  -d "{\"text\":\"$MEMORY_MARKER\"}" "$BASE_URL/api/memories")"
+CREATE_STATUS=$?
+MEMORY_ID="$(json_field "$CREATE_JSON" id)"
+if [[ "$CREATE_STATUS" -ne 0 || -z "$MEMORY_ID" ]]; then
+  fail "não consegui gravar na memória persistente (${CREATE_JSON:0:200})."
+else
+  ok "informação gravada no volume (id $MEMORY_ID)."
+fi
+
+LIST_JSON="$(curl --silent --show-error --max-time 15 "$BASE_URL/api/memories")"
+case "$LIST_JSON" in
+  *"$MEMORY_MARKER"*) ok "a informação aparece na listagem de /api/memories." ;;
+  *) fail "a informação gravada não aparece na listagem." ;;
+esac
+
+# Prova de persistência: recria o container do backend e confere que o volume mantém o dado.
+if "${COMPOSE[@]}" up -d --force-recreate --no-deps backend >/dev/null 2>&1; then
+  for _ in $(seq 1 30); do
+    curl --silent --fail --max-time 5 "$BASE_URL/health" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  AFTER_JSON="$(curl --silent --show-error --max-time 15 "$BASE_URL/api/memories")"
+  case "$AFTER_JSON" in
+    *"$MEMORY_MARKER"*) ok "a informação sobreviveu à recriação do container do backend." ;;
+    *) fail "a informação se perdeu quando o container foi recriado." ;;
+  esac
+else
+  fail "não consegui recriar o container do backend para testar a persistência."
+fi
+
+if [[ -n "$MEMORY_ID" ]]; then
+  DELETE_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' -X DELETE "$BASE_URL/api/memories/$MEMORY_ID")"
+  if [[ "$DELETE_STATUS" == "200" ]]; then
+    ok "registro de teste removido da memória."
+  else
+    fail "não consegui remover o registro de teste (HTTP $DELETE_STATUS)."
   fi
 fi
 

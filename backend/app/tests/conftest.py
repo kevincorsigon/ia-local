@@ -1,18 +1,20 @@
 """Fixtures dos testes: nenhuma dependência externa real é acessada.
 
-Ollama, Open-Meteo, Brave Search e Piper são simulados com ``httpx.MockTransport``,
+Ollama, Open-Meteo, Brave Search e Kokoro são simulados com ``httpx.MockTransport``,
 mantendo o mesmo caminho de código usado em produção (``httpx.AsyncClient``).
 """
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import main, memory
 
 Responder = Callable[[httpx.Request], httpx.Response]
 
@@ -70,10 +72,29 @@ def client() -> TestClient:
     return TestClient(main.app)
 
 
+@pytest.fixture(autouse=True)
+def isolated_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Isola a memória persistente: cada teste grava em um volume temporário."""
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr(memory, "MEMORY_FILE", tmp_path / "memories.json")
+    memory.reset_cache()
+    yield tmp_path
+    memory.reset_cache()
+
+
 def ollama_reply(content: str) -> Responder:
     """Resposta do Ollama no formato ``/api/chat`` (não streaming)."""
 
     def responder(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"message": {"role": "assistant", "content": content}})
+
+    return responder
+
+
+def raises(exc: Exception) -> Responder:
+    """Simula falha de transporte: conexão recusada, timeout, DNS etc."""
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        raise exc
 
     return responder

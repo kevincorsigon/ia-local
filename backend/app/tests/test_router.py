@@ -7,7 +7,14 @@ import httpx
 import pytest
 
 from app import tools
-from app.tools import ToolUnavailable, _extract_location, route_question, weather_tool, web_search_tool
+from app.tools import (
+    ToolUnavailable,
+    _extract_location,
+    extract_memory_text,
+    route_question,
+    weather_tool,
+    web_search_tool,
+)
 
 
 @pytest.mark.parametrize(
@@ -143,3 +150,57 @@ def test_pesquisa_descarta_resultado_sem_https(monkeypatch: pytest.MonkeyPatch, 
 
     with pytest.raises(ToolUnavailable):
         asyncio.run(web_search_tool("notícias de hoje"))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Grave que eu moro em Itapecerica da Serra",
+        "Lembre-se que eu prefiro café sem açúcar",
+        "Anote: o portão abre com 4321",
+        "não esqueça que o João é meu irmão",
+        "guarda isso: meu aniversário é em maio",
+    ],
+)
+def test_pedidos_de_guardar_vao_para_memory(message: str) -> None:
+    assert route_question(message) == "memory"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "O que você lembra?",
+        "O que você já gravou sobre mim?",
+        "Quais informações você guardou?",
+        "Mostre suas memórias",
+        "Você tem algo guardado?",
+    ],
+)
+def test_pedidos_de_listar_vao_para_memory_list(message: str) -> None:
+    assert route_question(message) == "memory_list"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Você lembra do meu nome?",
+        "Você lembra da previsão do tempo?",
+    ],
+)
+def test_perguntas_com_lembrar_nao_viram_gravacao(message: str) -> None:
+    assert route_question(message) != "memory"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Grave que eu moro em Itapecerica da Serra", "eu moro em Itapecerica da Serra"),
+        ("não esqueça que o João é meu irmão", "o João é meu irmão"),
+        ("Anote: o portão abre com 4321", "o portão abre com 4321"),
+        ("lembre-se que eu prefiro café sem açúcar", "eu prefiro café sem açúcar"),
+        ("anote que eu odeio acordar cedo, guarde isso", "eu odeio acordar cedo"),
+        ("lembre-se", ""),
+    ],
+)
+def test_extrai_conteudo_a_guardar(message: str, expected: str) -> None:
+    assert extract_memory_text(message) == expected

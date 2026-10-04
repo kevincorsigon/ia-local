@@ -7,13 +7,52 @@ import httpx
 
 BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
 
+MEMORY_SAVE_PATTERN = re.compile(
+    r"\b(grava|grave|gravar|guarda|guarde|guardar|memoriza|memorize|memorizar|"
+    r"anota|anote|anotar|lembra|lembre|lembrar|n[aã]o\s+esque[cç]a|n[aã]o\s+esque[cç]as)\b"
+)
+MEMORY_LIST_PATTERN = re.compile(
+    r"(\b(o que|que)\s+voc[eê]\s+(j[aá]\s+)?(lembra|gravou|guardou|anotou|memorizou)\b"
+    r"|\b(lista|listar|liste|mostra|mostrar|mostre|quais)\b[^?]*"
+    r"\b(mem[oó]rias?|anota[cç][oõ]es|lembran[cç]as|informa[cç][oõ]es)\b"
+    r"|\bvoc[eê]\s+(tem|guardou|gravou|anotou)\s+(algo|alguma\s+coisa|informa[cç][oõ]es)\b)"
+)
+_MEMORY_PREFIX = re.compile(
+    r"^\s*(?:por\s+favor,?\s*)?"
+    r"(?:grava|grave|gravar|guarda|guarde|guardar|memoriza|memorize|memorizar|"
+    r"anota|anote|anotar|lembra|lembre|lembrar|n[aã]o\s+esque[cç]a|n[aã]o\s+esque[cç]as)"
+    r"(?:-se)?"
+    r"(?:[\s,:-]+(?:que|isso|isto|essa|esse|esta|este|a[ií]))?"
+    r"[\s,:;-]*",
+    re.IGNORECASE,
+)
+_MEMORY_AFTER_QUE = re.compile(r"^\s*que\s+", re.IGNORECASE)
+_MEMORY_SUFFIX = re.compile(
+    r"[\s,;:-]*(?:ok|por\s+favor|guarda\s+isso|guarde\s+isso|anota\s+isso|anote\s+isso|"
+    r"lembre\s+disso|n[aã]o\s+esque[cç]a(?:\s+disso|\s+isso)?)\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+_QUESTION_START = re.compile(
+    r"^(qual|quais|quando|onde|quem|como|por\s+que|porque|pra\s+que|o\s+que|ser[aá]|"
+    r"voc[eê]|pode|poderia|consegue|sabe|existe|h[aá])\b"
+)
+
 
 class ToolUnavailable(Exception):
     pass
 
 
+def _looks_like_question(text: str) -> bool:
+    """Evita que perguntas como “você lembra da previsão?” virem ordem de gravar."""
+    return text.rstrip().endswith("?") or bool(_QUESTION_START.match(text))
+
+
 def route_question(message: str) -> str | None:
     text = message.casefold()
+    if MEMORY_LIST_PATTERN.search(text):
+        return "memory_list"
+    if MEMORY_SAVE_PATTERN.search(text) and not _looks_like_question(text):
+        return "memory"
     if re.search(r"\b(clima|tempo|previs[aã]o|chover|chuva|temperatura|temperaturas)\b", text):
         return "weather"
     if re.search(r"\b(pr[oó]ximo jogo|jogo do|jogos do|corinthians|placar|campeonato|partida)\b", text):
@@ -21,6 +60,14 @@ def route_question(message: str) -> str | None:
     if re.search(r"\b(not[ií]cia|not[ií]cias|pesquise|pesquisa|procure|buscar|cot[aã]?[cç][aã]o|pre[cç]o|lan[cç]amento|atualizado|atualizada|atual)\b", text):
         return "web_search"
     return None
+
+
+def extract_memory_text(message: str) -> str:
+    """Remove o comando da frase e devolve só o conteúdo que deve ser guardado."""
+    text = _MEMORY_PREFIX.sub("", message.strip(), count=1)
+    text = _MEMORY_AFTER_QUE.sub("", text)
+    text = _MEMORY_SUFFIX.sub("", text)
+    return re.sub(r"\s+", " ", text).strip(" .,;:-")
 
 
 def _extract_location(message: str) -> str | None:

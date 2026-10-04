@@ -16,16 +16,7 @@ VOSK_NAME="vosk-model-small-pt-0.3"
 VOSK_URL="https://alphacephei.com/vosk/models/$VOSK_NAME.zip"
 VOSK_DIR="$ROOT_DIR/backend/models"
 VOSK_TARGET="$VOSK_DIR/$VOSK_NAME"
-
-PIPER_VOICE_NAME="$(read_env PIPER_VOICE pt_BR-faber-medium)"
-PIPER_DIR="$ROOT_DIR/piper/voices"
-PIPER_TARGET="$PIPER_DIR/$PIPER_VOICE_NAME.onnx"
-PIPER_JSON="$PIPER_TARGET.json"
-
-# pt_BR-faber-medium -> pt/pt_BR/faber/medium no repositório de vozes do Piper.
-IFS='-' read -r PIPER_LOCALE PIPER_SPEAKER PIPER_QUALITY <<<"$PIPER_VOICE_NAME"
-PIPER_LANGUAGE="${PIPER_LOCALE%%_*}"
-PIPER_BASE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/$PIPER_LANGUAGE/$PIPER_LOCALE/$PIPER_SPEAKER/$PIPER_QUALITY"
+TTS_VOICE="$(read_env TTS_VOICE pf_dora)"
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "Dependência ausente: instale 'curl' para baixar os modelos de voz." >&2
@@ -68,7 +59,7 @@ vosk_model_ready() {
   [[ -s "$VOSK_TARGET/final.mdl" || -s "$VOSK_TARGET/am/final.mdl" ]]
 }
 
-mkdir -p "$VOSK_DIR" "$PIPER_DIR"
+mkdir -p "$VOSK_DIR"
 
 if ! vosk_model_ready; then
   archive="$(mktemp)"
@@ -85,11 +76,4 @@ else
   echo "Modelo Vosk pt-BR já está instalado."
 fi
 
-if [[ ! -s "$PIPER_TARGET" || ! -s "$PIPER_JSON" ]]; then
-  download "$PIPER_BASE_URL/$PIPER_VOICE_NAME.onnx" "$PIPER_TARGET" "voz Piper $PIPER_VOICE_NAME (cerca de 63 MB)"
-  download "$PIPER_BASE_URL/$PIPER_VOICE_NAME.onnx.json" "$PIPER_JSON" "configuração da voz Piper $PIPER_VOICE_NAME"
-else
-  echo "Voz Piper $PIPER_VOICE_NAME já está instalada."
-fi
-
-echo "Modelos de fala prontos. Os arquivos permanecem nas pastas ignoradas pelo Git."
+echo "Modelo Vosk pronto. O Kokoro não precisa baixar nada: a imagem CPU já traz o modelo v1_0 e a voz feminina $TTS_VOICE."

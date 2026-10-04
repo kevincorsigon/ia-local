@@ -3,48 +3,93 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#101827" />
+    <meta name="theme-color" content="#070a08" />
     <title>Assistente local</title>
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/style.css?v=9" />
   </head>
   <body>
     <main class="app-shell">
-      <header class="topbar">
-        <div class="brand-mark" aria-hidden="true">☺</div>
-        <div>
-          <p class="eyebrow">ASSISTENTE LOCAL</p>
-          <h1 id="assistant-name">Kunica</h1>
-        </div>
-        <span id="connection" class="connection" aria-live="polite">Conferindo Ollama…</span>
-      </header>
+      <section class="terminal" aria-label="Console da assistente">
+        <header class="topbar">
+          <div class="system-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="identity">
+            <p class="eyebrow">W-Y PERSONAL INTERFACE</p>
+            <h1 id="assistant-name">Kunica</h1>
+          </div>
+          <div class="system-status">
+            <span class="status-led" aria-hidden="true"></span>
+            <span id="connection" class="connection" aria-live="polite">Conferindo núcleo…</span>
+          </div>
+          <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel">Terminal de chat</button>
+          <button id="debug-toggle" class="control-button" type="button" aria-expanded="false" aria-controls="debug-panel">Debug áudio</button>
+        </header>
 
-      <section class="assistant-stage" aria-label="Estado da assistente">
-        <div id="face" class="face state-idle" role="img" aria-label="Kunica está esperando">
-          <span class="eye eye-left"></span>
-          <span class="eye eye-right"></span>
-          <span class="mouth"></span>
-        </div>
-        <p id="state-label" class="state-label">Estou aqui. Pode falar comigo por texto.</p>
-        <button id="stop-speaking" class="quiet-button" type="button" hidden>Parar áudio</button>
-        <button id="wake-mode" class="quiet-button" type="button" aria-pressed="false">Ativar alcunhas</button>
+        <section class="display" aria-label="Visor principal">
+          <div class="display-grid" aria-hidden="true"></div>
+          <div class="corner-mark corner-tl" aria-hidden="true">SYS//01</div>
+          <div class="corner-mark corner-tr" aria-hidden="true">LOCAL NODE</div>
+          <div class="instrument instrument-left" aria-hidden="true">
+            <span>VOICE LINK</span><b></b><b></b><b></b><em>STANDBY</em>
+          </div>
+          <div class="instrument instrument-right" aria-hidden="true">
+            <span>CORE STATUS</span><em>CPU LOCAL</em><em>MEMORY VOLATILE</em><em>NET ON DEMAND</em>
+          </div>
+
+          <section class="assistant-stage" aria-label="Estado da assistente">
+            <div class="halo halo-one" aria-hidden="true"></div>
+            <div class="halo halo-two" aria-hidden="true"></div>
+            <div id="face" class="face state-idle" role="img" aria-label="Kunica está esperando">
+              <span class="face-line face-line-top" aria-hidden="true"></span>
+              <span class="eye eye-left"></span>
+              <span class="eye eye-right"></span>
+              <span class="mouth"></span>
+              <span class="face-id" aria-hidden="true">K-01</span>
+            </div>
+            <p id="state-label" class="state-label">Estou aqui. Pode falar comigo.</p>
+          </section>
+
+          <div class="lower-readout" aria-hidden="true"><span>VOICE / PT-BR</span><span>OLLAMA // LOCAL</span><span>NO RECORDING</span></div>
+        </section>
+
+        <footer class="control-deck">
+          <div class="control-copy"><span class="control-label">INTERFACE</span><span class="control-value">CONVERSAÇÃO ASSISTIDA</span></div>
+          <button id="wake-mode" class="control-button" type="button" aria-pressed="false"><span class="button-led"></span>Ativar alcunhas</button>
+          <button id="stop-speaking" class="control-button danger" type="button" hidden>Parar áudio</button>
+          <button id="record" class="record-button" type="button" aria-pressed="false" aria-label="Gravar pergunta">
+            <span class="record-ring" aria-hidden="true"></span><span id="record-label">Falar</span>
+          </button>
+        </footer>
+
+        <section id="chat-panel" class="chat-panel" aria-label="Terminal de chat" aria-hidden="true">
+          <div class="chat-heading"><span>CANAL // TEXTO</span><button id="chat-close" type="button" aria-label="Fechar chat">×</button></div>
+          <section id="conversation" class="conversation" aria-live="polite" aria-label="Conversa">
+            <div class="empty-state" id="empty-state">Canal aberto. As mensagens somem quando a página é recarregada.</div>
+          </section>
+          <form id="chat-form" class="composer">
+            <label class="sr-only" for="message">Sua mensagem</label>
+            <textarea id="message" name="message" rows="1" maxlength="4000" placeholder="Digite uma mensagem…" required></textarea>
+            <button id="send" type="submit" aria-label="Enviar mensagem">Enviar <span aria-hidden="true">↗</span></button>
+          </form>
+        </section>
+        <section id="debug-panel" class="debug-panel" aria-label="Terminal de debug do áudio" aria-hidden="true">
+          <div class="debug-heading">
+            <span>DEBUG // ÁUDIO E MICROFONE</span>
+            <span class="debug-actions">
+              <button id="debug-clear" type="button">Limpar</button>
+              <button id="debug-copy" type="button">Copiar</button>
+              <button id="debug-close" type="button" aria-label="Fechar debug">×</button>
+            </span>
+          </div>
+          <div class="debug-controls" id="debug-controls">
+            <span class="control-label">MICROFONE</span>
+            <select id="mic-select" class="mic-select" aria-label="Escolher microfone de entrada"></select>
+            <span class="mic-meter" role="img" aria-label="Nível do microfone"><span id="mic-level" class="mic-level"></span></span>
+            <span id="mic-hint" class="mic-hint" hidden></span>
+          </div>
+          <pre id="debug-log" class="debug-log" aria-live="polite"></pre>
+        </section>
       </section>
-
-      <section id="conversation" class="conversation" aria-live="polite" aria-label="Conversa">
-        <div class="empty-state" id="empty-state">Sua conversa fica nesta tela. As mensagens não são salvas.</div>
-      </section>
-
-      <form id="chat-form" class="composer">
-        <label class="sr-only" for="message">Sua mensagem</label>
-        <textarea id="message" name="message" rows="1" maxlength="4000" placeholder="Escreva uma mensagem…" required></textarea>
-        <button id="record" class="mic-button" type="button" aria-pressed="false" aria-label="Gravar pergunta">
-          <span aria-hidden="true">●</span><span id="record-label">Falar</span>
-        </button>
-        <button id="send" type="submit" aria-label="Enviar mensagem">
-          <span>Enviar</span><span aria-hidden="true">↗</span>
-        </button>
-      </form>
-      <p class="local-note">As respostas são geradas pelo Ollama no seu próprio computador.</p>
     </main>
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=9" defer></script>
   </body>
 </html>

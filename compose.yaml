@@ -7,18 +7,29 @@ services:
     environment:
       ASSISTANT_CONFIG: /app/config/assistant.yaml
       VOSK_MODEL_PATH: /models/vosk-model-small-pt-0.3
-      PIPER_URL: http://piper:5000
+      TTS_URL: http://kokoro:8880
+      TTS_VOICE: ${TTS_VOICE:-pf_dora}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # Preenchida pelo bootstrap (scripts/ensure-ollama.sh): a outra instância, usada
+      # como reserva quando a principal não responde.
+      OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-}
       CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-180}
       MAX_MESSAGE_CHARS: ${MAX_MESSAGE_CHARS:-4000}
       MAX_RESPONSE_TOKENS: ${MAX_RESPONSE_TOKENS:-400}
       BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      MEMORY_DIR: /data
+      MAX_MEMORIES: ${MAX_MEMORIES:-200}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config/assistant.yaml:/app/config/assistant.yaml:ro
       - ./backend/models:/models:ro
+      # Volume nomeado do Docker: guarda o que o usuário pede para lembrar.
+      # Sobrevive a 'down'/'up' e à recriação do container, então as informações
+      # continuam disponíveis como base para sessões futuras.
+      - assistant-data:/data
     expose: ["8000"]
     restart: unless-stopped
     healthcheck:
@@ -44,28 +55,31 @@ services:
       retries: 3
       start_period: 5s
 
-  piper:
-    build: ./piper
+  kokoro:
+    # Kokoro-FastAPI na variante CPU: ~1,5 GB, com o modelo v1_0 e as vozes já
+    # embutidos (inclui a feminina pt-BR pf_dora). Sem GPU e sem download no boot,
+    # então a síntese funciona offline depois do primeiro pull. O contrato é o
+    # mesmo /v1/audio/speech que o backend consome. Para trocar de fonte, defina
+    # TTS_IMAGE em .env.
+    image: ${TTS_IMAGE:-ghcr.io/remsky/kokoro-fastapi-cpu:latest}
     profiles: [voice]
-    command:
-      - python
-      - -m
-      - piper.http_server
-      - --host
-      - 0.0.0.0
-      - --port
-      - "5000"
-      - --model
-      - ${PIPER_VOICE:-pt_BR-faber-medium}
-      - --data-dir
-      - /voices
-    volumes:
-      - ./piper/voices:/voices:ro
-    expose: ["5000"]
+    environment:
+      PORT: "8880"
+      DEVICE: cpu
+      USE_GPU: "false"
+      DOWNLOAD_MODEL: "false"
+    expose: ["8880"]
     restart: unless-stopped
     healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/info', timeout=3)"]
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8880/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 60s
+
+volumes:
+  # Storage do Docker para a memória do assistente (ver backend/app/memory.py).
+  # Inspecionar: docker volume inspect assistente-local-data
+  # Apagar tudo: docker compose --env-file .env --profile core --profile voice down -v
+  assistant-data:
+    name: assistente-local-data

@@ -37,8 +37,8 @@ O ambiente de desenvolvimento é WSL com Docker. O mesmo conjunto de imagens e a
 | Modelo | `qwen2.5:1.5b` quantizado pelo Ollama do host | Prioriza rapidez e baixa memória. |
 | Idioma | pt-BR obrigatório | Instrução de sistema, exemplos e validação de saída. |
 | STT | Vosk pt-BR na primeira versão | Consumo pequeno e resposta rápida em CPU. |
-| TTS | Piper com voz pt-BR | Offline e leve. |
-| Interface | Web local em tela cheia | Funciona em navegador no WSL e Ubuntu. |
+| TTS | Kokoro com voz feminina pt-BR `pf_dora` | Síntese local, voz feminina brasileira e cache persistente no host. |
+| Interface | Web local em tela cheia, otimizada para 1024×768 | Funciona na TV retro, no WSL e no Ubuntu sem exigir rolagem na tela principal. |
 | Backend | Python + FastAPI | Integração simples com áudio, Ollama e APIs. |
 | Dados atuais | Ferramentas HTTP com lista de domínios permitidos | Evita alucinação de dados temporais. |
 | Distribuição | Docker Compose + Ollama no host | Paridade entre WSL e Ubuntu, com modelos geridos fora dos containers. |
@@ -79,9 +79,8 @@ No WSL há duas configurações possíveis: Ollama executando dentro da distribu
 ├── frontend/
 │   ├── Dockerfile
 │   └── src/
-├── piper/
-│   ├── Dockerfile
-│   └── voices/                 # ignorado pelo Git
+├── kokoro/
+│   └── cache/                  # ignorado pelo Git; modelo e voz baixados no primeiro boot
 ├── data/                       # ignorado pelo Git
 └── scripts/
     ├── bootstrap.sh
@@ -97,7 +96,7 @@ No WSL há duas configurações possíveis: Ollama executando dentro da distribu
 2. `listening`: captura de áudio em andamento.
 3. `transcribing`: backend processa áudio.
 4. `thinking`: classificador decide ferramenta e o modelo elabora a resposta.
-5. `speaking`: navegador reproduz áudio do Piper e anima a boca.
+5. `speaking`: navegador reproduz áudio do Kokoro e anima a boca.
 6. `error`: mensagem curta e ação de tentar novamente.
 
 ### 5.1.1 Alcunhas e ativação por voz
@@ -115,6 +114,8 @@ assistant:
     - "ei tv"
     - "eae tv"
   follow_up_seconds: 8
+  # Depois de uma resposta, a conversa segue ativa por este tempo sem exigir a alcunha.
+  conversation_seconds: 60
 ```
 
 As frases são exemplos iniciais e devem ser editáveis sem alterar o código. O detector deve normalizar maiúsculas/minúsculas, pontuação, espaços repetidos e variações leves de saudação. Não remover a palavra `tv` de mensagens comuns no chat textual: alcunhas só ativam quando o modo de palavra de ativação estiver ligado e a captura de microfone estiver ativa.
@@ -124,9 +125,10 @@ Comportamento esperado:
 1. Com ativação por voz ligada, o detector local fica em espera e mostra um indicador visual claro de que o microfone está sendo monitorado para a frase de ativação. O áudio não deve ser gravado em disco; manter somente o trecho mínimo em memória necessário à detecção e ao recorte da fala após a frase.
 2. Ao reconhecer uma frase, mudar o rosto para `listening` e considerar o restante da mesma fala como conteúdo da pergunta. Ex.: “Fala comigo, Kunica, qual é a previsão do tempo?” deve seguir como uma única pergunta depois de remover a invocação.
 3. Se a fala contiver apenas uma chamada/saudação (“E aí, TV”, “Oi, minha puta”), responder com uma saudação curta e abrir `follow_up_seconds` para a pessoa continuar falando sem repetir a alcunha.
-4. Se nenhuma fala continuar durante a janela, voltar para `idle`/espera da palavra de ativação.
-5. O botão manual continua disponível. Desligar a ativação por voz deve interromper o monitoramento do microfone.
-6. Configurar janela, sensibilidade e timeout; evitar ativações causadas por ocorrências da alcunha dentro de frases não dirigidas ao assistente, tanto quanto permitir o detector.
+4. Depois de qualquer resposta, manter a conversa ativa por `conversation_seconds` (60 s por padrão): as falas seguintes são tratadas como continuação, sem exigir a alcunha, e cada fala renova o prazo, que também reinicia quando a resposta termina de ser falada.
+5. Se nenhuma fala continuar dentro da janela (`follow_up_seconds` ou `conversation_seconds`), voltar para `idle`/espera da palavra de ativação.
+6. O botão manual continua disponível. Desligar a ativação por voz deve interromper o monitoramento do microfone.
+7. Configurar janela, sensibilidade e timeout; evitar ativações causadas por ocorrências da alcunha dentro de frases não dirigidas ao assistente, tanto quanto permitir o detector.
 
 O reconhecimento precisa funcionar localmente. A implementação pode usar OpenWakeWord se houver ou for criado um modelo adequado às frases em pt-BR; caso a qualidade de detecção das expressões seja insuficiente, usar Vosk em modo de reconhecimento restrito a gramática/frases enquanto o modo estiver ativado. A decisão deve ser tomada com um teste manual de falsos positivos e falsos negativos em ambiente de uso. Não depender de reconhecimento em nuvem.
 
@@ -136,9 +138,13 @@ O reconhecimento precisa funcionar localmente. A implementação pode usar OpenW
 | --- | --- | --- | --- |
 | `GET /health` | — | estado dos serviços | monitoramento |
 | `POST /api/chat` | `{message, session_id}` | resposta, fontes e estado | conversa por texto |
-| `POST /api/transcribe` | áudio WebM/WAV | `{text, confidence}` | fala para texto |
+| `POST /api/transcribe` | áudio WebM/WAV; `?scan_wake=true` acrescenta a alcunha detectada | `{text, confidence, wake?}` | fala para texto e ativação por voz |
 | `POST /api/speak` | `{text}` | áudio WAV | texto para fala |
 | `GET /api/config/public` | — | nome e opções visuais seguras | personalização da UI |
+| `GET /api/memories` | — | lista do que está guardado | transparência do storage |
+| `POST /api/memories` | `{text}` | registro criado | gravar sem passar pelo chat |
+| `DELETE /api/memories/{id}` | — | `{removed}` | apagar um item guardado |
+| `DELETE /api/memories` | — | `{removed}` | limpar toda a memória |
 
 O MVP usa requisições HTTP discretas para chat e clipes de áudio; WebSocket/streaming contínuo fica fora da implementação inicial.
 
@@ -178,6 +184,8 @@ Antes do LLM principal, executar um roteador barato composto por regras e classi
 | hoje, amanhã, semana, temperatura, chuva, previsão | `weather` | “Vai chover em Itapecerica?” |
 | próximo jogo, tabela, placar, Corinthians, campeonato | `sports` | “Quando é o próximo jogo do Corinthians?” |
 | notícia, lançamento, preço, cotação, quem é o atual | `web_search` | “Quais são as notícias de hoje?” |
+| gravar, guardar, lembrar, anotar, memorizar, não esqueça | `memory` | “Grave que eu moro em Itapecerica da Serra.” |
+| o que você lembra, quais informações você guardou | `memory_list` | “O que você lembra?” |
 | nenhum sinal temporal | nenhuma | “Explique fotossíntese.” |
 
 Implementar conectores como adaptadores intercambiáveis. O primeiro conector de clima pode usar Open-Meteo; esportes e pesquisa devem usar uma API escolhida na fase de implementação, documentando chave, limite e alternativa gratuita. Nunca fazer scraping direto do Google como dependência central.
@@ -191,6 +199,7 @@ Se a ferramenta falhar, informar que não foi possível consultar o dado atual e
 - Lista de domínios permitidos para cada ferramenta HTTP.
 - Limites de tempo, tamanho de resposta e tentativas para chamadas externas.
 - Áudio e histórico desligados por padrão; se ativados, gravar em `data/` e oferecer comando de limpeza.
+- A memória explícita — só o que o usuário pede para guardar — é gravada no volume Docker `assistente-local-data`, pode ser listada e apagada pelas rotas de `/api/memories` e nunca recebe áudio. O histórico curto da conversa continua apenas em memória.
 - Logs estruturados sem conteúdo de microfone, tokens ou chaves.
 - Sem ferramentas de shell, arquivo, banco de dados externo ou navegador controlado na V1.
 
@@ -208,12 +217,13 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 | 1 — Ollama e chat textual | `[~]` | Backend, interface, checagem de saúde e chat implementados; ainda não executados contra o Ollama real. |
 | 2 — Persona e contexto | `[~]` | YAML, nome/persona, sessão em memória, limite de turnos e TTL implementados; falta validar comportamento em execução. |
 | 3 — Ferramentas atuais | `[~]` | Clima e Brave Search ligados ao roteador/chat com fontes na UI; pesquisa exige chave e falta validar em execução. |
-| 4 — Síntese de voz | `[~]` | Piper, endpoint, modelo local e reprodução automática implementados; falta validar instalação/áudio no WSL e Ubuntu. |
+| 4 — Síntese de voz | `[~]` | Kokoro com voz feminina `pf_dora`, endpoint e reprodução automática implementados; falta validar download inicial e áudio no WSL e Ubuntu. |
 | 5 — Reconhecimento de voz | `[~]` | Endpoint Vosk/FFmpeg e botão para gravar/transcrever implementados; falta validação com microfone real. |
 | 6 — Rosto animado | `[~]` | Rosto CSS integrado aos estados de espera, microfone, pensamento, fala e erro; falta validação visual no navegador. |
-| 7 — Alcunhas/ativação por voz | `[~]` | Modo opcional implementado com clipes independentes de 6 segundos, Vosk local, detecção de alcunhas e janela de continuação; falta validar falsos positivos, desempenho e microfone no J5040. |
-| 8 — Empacotamento/operação | `[~]` | Compose e bootstrap incluem Ollama no host, backend, frontend e Piper; falta validar build e execução no Ubuntu. |
-| 9 — Aceitação/desempenho | `[ ]` | Não iniciada; depende de executar o conjunto no J5040. |
+| 7 — Alcunhas/ativação por voz | `[~]` | Modo opcional com captura contínua por detecção de silêncio, envio automático sem botões, alcunhas reconhecidas no backend com tolerância aos erros do Vosk e janela de continuação; falta medir falsos positivos com microfone real no J5040. |
+| 8 — Empacotamento/operação | `[~]` | Compose e bootstrap incluem Ollama do host (Windows/GPU primeiro, WSL como reserva), backend, frontend, Kokoro CPU e o volume de dados `assistente-local-data`; falta validar build e execução no Ubuntu. |
+| 9 — Aceitação/desempenho | `[~]` | Suíte automatizada do backend (pytest) verde e medições de GPU (193 tokens/s) e CPU (34 tokens/s) em `docs/phase9-metrics.md`; medição no J5040 pendente. |
+| 10 — Memória persistente | `[~]` | Volume Docker, rotas `/api/memories`, roteador `memory`/`memory_list` e injeção no prompt implementados e cobertos por testes; falta validar uso contínuo no J5040. |
 
 ### Fase 0 — Preparação do repositório e decisões operacionais
 
@@ -257,13 +267,13 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 ### Fase 4 — Síntese de voz
 
-**Estado:** `[~]` serviço Piper, endpoint `/api/speak`, voz pt-BR e reprodução/controle no navegador implementados; execução e qualidade de áudio ainda não validadas no WSL/Ubuntu.
+**Estado:** `[~]` serviço Kokoro (imagem CPU do Kokoro-FastAPI, com modelo e vozes embutidos), voz feminina pt-BR `pf_dora`, endpoint `/api/speak` e reprodução/controle no navegador implementados; síntese validada no WSL, faltam a percepção de qualidade do áudio e a repetição no Ubuntu/J5040.
 
 **Objetivo:** transformar respostas em áudio pt-BR.
 
-**Tarefas:** criar imagem ou serviço Piper; adicionar voz pt-BR via volume; implementar `POST /api/speak`; limitar tamanho de texto; tocar áudio no navegador; implementar botão para interromper fala.
+**Tarefas:** criar serviço Kokoro com cache persistente; configurar voz feminina pt-BR; implementar `POST /api/speak`; limitar tamanho de texto; tocar áudio no navegador; implementar botão para interromper fala.
 
-**Aceite:** uma resposta em pt-BR é reproduzida; parar a fala cancela áudio local; erro no TTS preserva a resposta escrita.
+**Aceite:** uma resposta em pt-BR é reproduzida com `pf_dora`; parar a fala cancela áudio local; erro no TTS preserva a resposta escrita.
 
 ### Fase 5 — Captura e reconhecimento de voz
 
@@ -277,31 +287,31 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 ### Fase 6 — Rosto animado
 
-**Estado:** `[~]` layout e animação CSS estão ligados aos estados do chat e da reprodução Piper; validação no navegador pendente.
+**Estado:** `[~]` interface foi reimaginada em CSS como console retrofuturista de baixo custo, com face central, visor técnico e painel de chat alternável; validação no navegador pendente.
 
 **Objetivo:** criar identidade visual leve e reativa.
 
-**Tarefas:** implementar rosto em SVG/CSS/Canvas sem assets proprietários; estados `idle`, `listening`, `thinking`, `speaking`, `error`; animar boca de forma simples durante áudio; expor tema e nome em configuração pública; adicionar preferência para reduzir movimento.
+**Tarefas:** implementar rosto em SVG/CSS/Canvas sem assets proprietários; manter a tela principal sem rolagem em 1024×768; priorizar a face e abrir o chat em painel alternável; implementar estados `idle`, `listening`, `thinking`, `speaking`, `error`; animar boca de forma simples durante áudio; expor tema e nome em configuração pública; adicionar preferência para reduzir movimento.
 
 **Aceite:** cada estado da conversa altera a expressão; animações funcionam em navegador comum sem WebGL; modo de movimento reduzido remove animações contínuas.
 
 ### Fase 7 — Alcunhas e ativação por voz
 
-**Estado:** `[~]` frases em `config/assistant.yaml` e detecção por transcrição Vosk em trechos curtos implementadas; falta medir falsos positivos/falsos negativos e validar no J5040. OpenWakeWord não foi adotado nesta implementação inicial.
+**Estado:** `[~]` frases em `config/assistant.yaml`, captura contínua com detecção de silêncio no navegador (envio automático, sem botões), conversa contínua por 'conversation_seconds' após cada resposta e reconhecimento das alcunhas no backend (`app/wake.py`, coberto por testes) implementados; a preferência de escuta fica salva no navegador. Falta medir falsos positivos/falsos negativos com microfone real e validar no J5040. OpenWakeWord não foi adotado; como o Vosk pt-BR não conhece os nomes ("Kunica" vira "única"/"econômica" e "TVzinha" vira "vizinha"), a comparação tolera essas trocas no início da fala.
 
 **Objetivo:** iniciar conversa ao chamar o assistente pelas alcunhas configuradas, sem clicar e sem gravar áudio continuamente em disco.
 
-**Tarefas:** implementar configuração de nome, alcunhas e frases; avaliar OpenWakeWord local para português e comparar com Vosk usando gramática restrita; manter o reconhecimento habilitado somente por opção; exibir indicador de escuta persistente; capturar clipes independentes curtos em memória e nunca gravar áudio por padrão; processar a fala seguinte à invocação; responder a saudações isoladas e abrir janela de continuação configurável; manter acionamento manual como alternativa; registrar taxa de falso positivo/falso negativo em teste manual.
+**Tarefas:** implementar configuração de nome, alcunhas e frases; avaliar OpenWakeWord local para português e comparar com Vosk usando gramática restrita; manter o reconhecimento habilitado somente por opção; exibir indicador de escuta persistente; capturar clipes independentes curtos em memória e nunca gravar áudio por padrão; processar a fala seguinte à invocação; responder a saudações isoladas e abrir janela de continuação configurável; manter acionamento manual como alternativa; detectar o fim da fala no navegador para enviar sem cliques; reconhecer as alcunhas no backend com tolerância às trocas do Vosk; registrar taxa de falso positivo/falso negativo em teste manual.
 
-**Aceite:** cada alcunha configurada ativa o assistente em pt-BR no Ubuntu; “fala comigo, Kunica, [pergunta]” processa a pergunta na mesma fala quando couber no clipe capturado; uma chamada sem pergunta recebe saudação e abre janela de continuação; expirar a janela retorna ao modo de espera; desligar o recurso interrompe acesso ao microfone; detecção não bloqueia UI nem chat textual e não persiste áudio.
+**Aceite:** cada alcunha configurada ativa o assistente em pt-BR no Ubuntu; “fala comigo, Kunica, [pergunta]” processa a pergunta na mesma fala quando couber no clipe capturado; uma chamada sem pergunta recebe saudação e abre janela de continuação; expirar a janela retorna ao modo de espera; parar de falar envia a mensagem ao modelo sem cliques, tanto pelo botão de microfone quanto pelas alcunhas; desligar o recurso interrompe acesso ao microfone; detecção não bloqueia UI nem chat textual e não persiste áudio.
 
 ### Fase 8 — Empacotamento, operação e desempenho
 
-**Estado:** `[~]` Compose e bootstrap preparam Vosk/Piper e iniciam os serviços de voz; perfil e validação de wakeword, build e execução no Ubuntu pendentes.
+**Estado:** `[~]` Compose e bootstrap preparam o Vosk, o Kokoro com modelo embutido (imagem CPU) e o volume de dados; o bootstrap prefere o Ollama do Windows com GPU e cai para o do WSL quando ele não responde; build e execução no Ubuntu pendentes.
 
 **Objetivo:** tornar a implantação repetível no Ubuntu.
 
-**Tarefas:** criar imagens multiestágio quando útil; volumes `data` e `voices`; healthchecks; limites de recursos; script de bootstrap; guia de atualização, backup e diagnóstico; serviço systemd opcional para iniciar Compose no boot. Documentar serviço Ollama do host, sua API na porta `11434`, endereço de API acessível pelo container e dependência de inicialização antes do backend.
+**Tarefas:** criar imagens multiestágio quando útil; volumes de dados e cache do Kokoro; healthchecks; limites de recursos; script de bootstrap; guia de atualização, backup e diagnóstico; serviço systemd opcional para iniciar Compose no boot. Documentar o serviço Ollama do host (o do Windows com GPU tem prioridade; o do WSL é reserva), sua API na porta `11434`, endereço de API acessível pelo container e dependência de inicialização antes do backend; gravar a instância escolhida em `data/ollama-mode.env`.
 
 **Aceite:** instalação limpa segue README; `./scripts/bootstrap.sh` inicia o Ollama do host, garante o modelo e sobe os containers; reinício do host restaura o assistente; healthcheck identifica dependência indisponível.
 
@@ -315,11 +325,21 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 **Aceite:** fluxo completo texto e voz opera localmente; todas as respostas externas apresentam fonte; medições e configuração final ficam registradas no README.
 
+### Fase 10 — Memória persistente no volume Docker
+
+**Estado:** `[~]` implementada e coberta por testes automatizados; falta validar o uso contínuo no J5040.
+
+**Objetivo:** guardar no storage do Docker as informações que o usuário pede para lembrar e usá-las como base nas conversas seguintes.
+
+**Tarefas:** criar o volume nomeado `assistente-local-data` montado em `/data`; gravar `memories.json` com escrita atômica; reconhecer pedidos de gravação e de listagem no roteador; confirmar a gravação sem chamar o modelo; injetar o bloco de memória no prompt de sistema de toda sessão nova; expor `GET`/`POST`/`DELETE /api/memories`; limitar quantidade (`MAX_MEMORIES`) e tamanho por item; degradar com aviso, sem derrubar o chat, quando o volume falhar.
+
+**Aceite:** “grave que …” cria o registro no volume; o registro continua disponível após `down`/`up` e após recriar o container; uma sessão nova usa o conteúdo guardado; “o que você lembra?” lista o que existe; apagar um item e limpar tudo funcionam; falha de volume não derruba o chat.
+
 ## 10. Operação esperada
 
 No WSL: escolher se Ollama roda na própria distribuição Linux ou no Windows host, validar a rota Docker→host conforme a seção 3.1, editar arquivos e acessar `http://localhost:<porta>`. No Ubuntu: instalar Ollama no host, copiar ou clonar o repositório, preencher `.env` e iniciar pelo bootstrap descrito abaixo.
 
-O Compose deve suportar perfis: `core` (backend e frontend), `voice` (Piper e STT) e `wakeword` (opcional). O perfil `core` precisa permitir desenvolvimento mesmo sem microfone configurado. A configuração de `extra_hosts` deve ser validada para Docker Engine no Ubuntu e Docker Desktop/WSL; `OLLAMA_BASE_URL` será configurável por `.env` e terá padrão documentado.
+O Compose deve suportar perfis: `core` (backend e frontend), `voice` (Kokoro e STT) e `wakeword` (opcional). O perfil `core` precisa permitir desenvolvimento mesmo sem microfone configurado. A configuração de `extra_hosts` deve ser validada para Docker Engine no Ubuntu e Docker Desktop/WSL; `OLLAMA_BASE_URL` será configurável por `.env` e terá padrão documentado.
 
 ### 10.1 Inicialização obrigatória
 

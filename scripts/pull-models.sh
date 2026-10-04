@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Prepara todas as dependências locais (modelo do Ollama no host, Vosk e Piper)
-# sem construir imagens nem subir containers. Idempotente.
+# Prepara as dependências locais sem construir imagens nem subir containers: escolhe o
+# Ollama do Windows (GPU) ou o do WSL (CPU), garante o modelo e prepara o Vosk.
+# O Kokoro não baixa nada: a imagem CPU já traz o modelo v1_0 e as vozes.
+# Idempotente.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

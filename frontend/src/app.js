@@ -5,6 +5,20 @@ const recordButton = document.querySelector("#record");
 const recordLabel = document.querySelector("#record-label");
 const stopSpeakingButton = document.querySelector("#stop-speaking");
 const wakeModeButton = document.querySelector("#wake-mode");
+const micSelect = document.querySelector("#mic-select");
+const micLevel = document.querySelector("#mic-level");
+const micHint = document.querySelector("#mic-hint");
+const debugControls = document.querySelector("#debug-controls");
+const debugPanel = document.querySelector("#debug-panel");
+const debugLog = document.querySelector("#debug-log");
+const debugToggle = document.querySelector("#debug-toggle");
+const debugClose = document.querySelector("#debug-close");
+const debugClear = document.querySelector("#debug-clear");
+const debugCopy = document.querySelector("#debug-copy");
+const chatToggle = document.querySelector("#chat-toggle");
+const chatClose = document.querySelector("#chat-close");
+const chatPanel = document.querySelector("#chat-panel");
+const terminal = document.querySelector(".terminal");
 const conversation = document.querySelector("#conversation");
 const emptyState = document.querySelector("#empty-state");
 const face = document.querySelector("#face");
@@ -25,12 +39,173 @@ let currentAudio = null;
 let currentAudioUrl = null;
 let wakeRecorder = null;
 let wakeStream = null;
-let wakeBusy = false;
 let wakeEnabled = false;
 let wakeFollowupUntil = 0;
-let wakeClipTimer = null;
 let followUpSeconds = 8;
-let wakePhrases = [];
+// Depois de uma resposta por voz, a conversa fica ativa por este tempo: falar já envia a
+// mensagem, sem repetir a alcunha. Passado o tempo sem fala, volta a exigir a alcunha.
+let conversationUntil = 0;
+let conversationSeconds = 60;
+let wakeLabel = "Kunica";
+
+// Detecção de fala (VAD) no navegador: a captura termina quando o usuário para de
+// falar, então nada depende de clicar em "Parar" nem em "Enviar". O limiar de fala é
+// calibrado a cada captura pelo ruído do ambiente (ver captureSpeech).
+const VAD_SILENCE_MS = 800;
+const VAD_MIN_MS = 500;
+const VAD_POLL_MS = 80;
+// Piso e teto do limiar de fala: abaixo do piso o ruído passaria por fala; acima do teto
+// um ambiente barulhento nunca seria considerado fala.
+const VAD_MIN_THRESHOLD = 0.02;
+const VAD_MAX_THRESHOLD = 0.2;
+let captureRunning = false;
+let captureStopRequest = false;
+
+// Logs de diagnóstico no console do navegador (F12 → Console) e no painel "Debug áudio".
+// Ajudam a ver o nível de áudio, o tamanho da gravação e o que cada etapa devolveu.
+const logLines = [];
+const LOG_LINE_LIMIT = 400;
+
+function stringifyArg(value) {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function writeLogLine(text) {
+  logLines.push(text);
+  if (logLines.length > LOG_LINE_LIMIT) logLines.splice(0, logLines.length - LOG_LINE_LIMIT);
+  if (debugLog) {
+    debugLog.textContent = logLines.join("\n");
+    debugLog.scrollTop = debugLog.scrollHeight;
+  }
+}
+
+function log(...args) {
+  console.log("[kunica]", ...args);
+  writeLogLine(`${new Date().toLocaleTimeString("pt-BR")} ${args.map(stringifyArg).join(" ")}`);
+}
+
+function logWarn(...args) {
+  console.warn("[kunica]", ...args);
+  writeLogLine(`${new Date().toLocaleTimeString("pt-BR")} ! ${args.map(stringifyArg).join(" ")}`);
+}
+
+// --- Seleção de microfone --------------------------------------------------------
+const micStorageKey = "assistant-mic-id";
+let chosenMicId = window.localStorage.getItem(micStorageKey) || "";
+
+function looksLikeOutput(label) {
+  return /fone|headphone|headset|alto-?falante|speaker|saída|output|hdmi/i.test(label);
+}
+
+function updateMicHint(text) {
+  if (!micHint) return;
+  if (text) {
+    micHint.textContent = text;
+    micHint.hidden = false;
+  } else {
+    micHint.hidden = true;
+  }
+}
+
+function micConstraints() {
+  const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  if (chosenMicId) audio.deviceId = { exact: chosenMicId };
+  return { audio };
+}
+
+async function openMicrophone() {
+  try {
+    return await navigator.mediaDevices.getUserMedia(micConstraints());
+  } catch (error) {
+    if (chosenMicId) {
+      logWarn("o microfone escolhido não abriu; voltando ao padrão:", error);
+      chosenMicId = "";
+      window.localStorage.removeItem(micStorageKey);
+      return navigator.mediaDevices.getUserMedia(micConstraints());
+    }
+    throw error;
+  }
+}
+
+function checkMicChoice() {
+  const label = micSelect?.selectedOptions?.[0]?.textContent || "";
+  updateMicHint(
+    looksLikeOutput(label)
+      ? `"${label}" parece ser de saída de áudio. Escolha o microfone do computador (ou ligue o modo "Headset" do Bluetooth).`
+      : ""
+  );
+}
+
+async function refreshMicDevices() {
+  if (!micSelect || !navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((device) => device.kind === "audioinput");
+    micSelect.innerHTML = "";
+    if (!inputs.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "nenhum microfone encontrado";
+      micSelect.append(option);
+      updateMicHint("Nenhuma entrada de áudio disponível neste computador.");
+      return;
+    }
+    for (const [index, device] of inputs.entries()) {
+      const option = document.createElement("option");
+      option.value = device.deviceId;
+      option.textContent = device.label || `Microfone ${index + 1}`;
+      option.selected = device.deviceId === chosenMicId;
+      micSelect.append(option);
+    }
+    if (!chosenMicId && micSelect.value) {
+      // Fixa o dispositivo que a interface está mostrando, para o que você vê ser o que é usado.
+      chosenMicId = micSelect.value;
+      window.localStorage.setItem(micStorageKey, chosenMicId);
+    }
+    log("microfones na interface:", inputs.map((device) => device.label || "(sem nome)"));
+    checkMicChoice();
+  } catch (error) {
+    logWarn("não consegui listar os microfones:", error);
+  }
+}
+
+function setMicLevel(level, { hot = false, silent = false } = {}) {
+  if (micLevel) {
+    micLevel.style.width = `${Math.min(100, Math.round(level * 400))}%`;
+    micLevel.classList.toggle("hot", hot);
+  }
+  debugControls?.classList.toggle("silent", silent);
+}
+
+function resetMicLevel() {
+  setMicLevel(0);
+}
+
+function setChatOpen(open) {
+  terminal.classList.toggle("chat-open", open);
+  chatToggle.setAttribute("aria-expanded", String(open));
+  chatPanel.setAttribute("aria-hidden", String(!open));
+  chatPanel.inert = !open;
+  if (open) {
+    window.setTimeout(() => input.focus(), 240);
+  }
+}
+
+function setDebugOpen(open) {
+  terminal.classList.toggle("debug-open", open);
+  debugToggle.setAttribute("aria-expanded", String(open));
+  debugPanel.setAttribute("aria-hidden", String(!open));
+  debugPanel.inert = !open;
+}
+
+setChatOpen(false);
+setDebugOpen(false);
 
 function setState(state, label) {
   face.className = `face state-${state}`;
@@ -38,9 +213,17 @@ function setState(state, label) {
   stateLabel.textContent = label;
 }
 
+function conversationActive() {
+  return conversationUntil > performance.now();
+}
+
+function idleVoiceLabel() {
+  return conversationActive() ? "Ouvindo — conversa ativa, pode falar" : `Diga "${wakeLabel}" quando quiser falar`;
+}
+
 function showReadyState() {
   if (wakeEnabled) {
-    setState("listening", "Estou monitorando as alcunhas localmente. Toque para desligar.");
+    setState("listening", idleVoiceLabel());
   } else {
     setState("idle", "Pronto para conversar.");
   }
@@ -56,99 +239,291 @@ function addBubble(role, text) {
   return bubble;
 }
 
-function normalizeForWake(text) {
-  return text.toLocaleLowerCase("pt-BR").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+function mediaRecorderOptions() {
+  return MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+    ? { mimeType: "audio/webm;codecs=opus" } : undefined;
 }
 
-function matchWakePhrase(text) {
-  const tokens = [...text.matchAll(/[\p{L}\p{N}]+/gu)];
-  const normalizedTokens = tokens.map((token) => normalizeForWake(token[0]));
-  const aliases = wakePhrases
-    .map((alias) => ({ alias, tokens: normalizeForWake(alias).split(" ") }))
-    .sort((a, b) => b.tokens.length - a.tokens.length);
-  for (const candidate of aliases) {
-    for (let start = 0; start <= normalizedTokens.length - candidate.tokens.length; start += 1) {
-      const matched = candidate.tokens.every((token, offset) => normalizedTokens[start + offset] === token);
-      if (!matched) continue;
-      const finalToken = tokens[start + candidate.tokens.length - 1];
-      const query = text.slice(finalToken.index + finalToken[0].length)
-        .replace(/^[\s,;:!?—-]+/, "").trim();
-      return { alias: candidate.alias, query };
-    }
+function audioLevel(analyser, buffer) {
+  analyser.getFloatTimeDomainData(buffer);
+  let sum = 0;
+  for (const value of buffer) sum += value * value;
+  return Math.sqrt(sum / buffer.length);
+}
+
+function describeTrack(stream) {
+  const track = stream.getAudioTracks()[0];
+  if (!track) return "sem faixa de áudio";
+  const settings = track.getSettings ? track.getSettings() : {};
+  return [
+    `label="${track.label || "(sem nome)"}"`,
+    `estado=${track.readyState}`,
+    `mudo=${track.muted}`,
+    `ativo=${track.enabled}`,
+    settings.sampleRate ? `taxa=${settings.sampleRate}Hz` : null,
+    settings.channelCount ? `canais=${settings.channelCount}` : null,
+    settings.deviceId ? `deviceId=${String(settings.deviceId).slice(0, 8)}…` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+// Grava desde o primeiro instante e resolve quando o usuário para de falar.
+// O VAD decide apenas QUANDO PARAR — antes ele decidia quando começar, e se o navegador
+// não entregasse nível de áudio (contexto suspenso, microfone sem ganho) nada era gravado.
+// Há um envio de segurança: sem detectar fala, a gravação é encerrada em `fallbackMs` e
+// ainda assim é transcrita, então nenhum áudio é descartado.
+async function captureSpeech(
+  stream,
+  { maxMs = 15000, fallbackMs = 8000, idleLabel = "Ouvindo…", activeLabel = "Ouvindo…" } = {}
+) {
+  const context = new AudioContext();
+  try {
+    await context.resume();
+  } catch {
+    // Alguns navegadores liberam o áudio só depois de um clique; o botão já é um clique.
   }
-  return null;
+  log("AudioContext:", context.state, "| taxa", context.sampleRate, "Hz");
+  const source = context.createMediaStreamSource(stream);
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 2048;
+  // Liga o grafo a um ganho mudo: sem isso o navegador pode não alimentar o analisador.
+  const silent = context.createGain();
+  silent.gain.value = 0;
+  source.connect(analyser);
+  analyser.connect(silent);
+  silent.connect(context.destination);
+  const buffer = new Float32Array(analyser.fftSize);
+  const recorder = new MediaRecorder(stream, mediaRecorderOptions());
+  const chunks = [];
+  let bytes = 0;
+  log("captura iniciada —", describeTrack(stream), "| gravador:", recorder.mimeType || "(padrão)");
+
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data.size) {
+      chunks.push(event.data);
+      bytes += event.data.size;
+      log("bloco de áudio:", event.data.size, "bytes (total", bytes, "bytes)");
+    }
+  });
+
+  // Calibração curta: mede o ruído de fundo e define o limiar a partir dele.
+  const noiseSamples = [];
+  const calibrateUntil = performance.now() + 300;
+  while (performance.now() < calibrateUntil) {
+    noiseSamples.push(audioLevel(analyser, buffer));
+    await new Promise((resolve) => window.setTimeout(resolve, 40));
+  }
+  // Mediana em vez de média: se você falar durante a calibração, os picos não elevam o limiar.
+  const noise = noiseSamples.length
+    ? [...noiseSamples].sort((a, b) => a - b)[Math.floor(noiseSamples.length / 2)]
+    : 0;
+  const threshold = Math.min(VAD_MAX_THRESHOLD, Math.max(VAD_MIN_THRESHOLD, noise * 3));
+  const startedAt = performance.now();
+  log("calibração: ruído", noise.toFixed(4), "→ limiar de fala", threshold.toFixed(4));
+
+  return new Promise((resolve) => {
+    let speechDetected = false;
+    let speechMs = 0;
+    let silenceMs = 0;
+    let finished = false;
+    let lastLevelLog = 0;
+    let peak = 0;
+    let reason = "fim";
+    let lastTick = startedAt;
+    recorder.start();
+    resetMicLevel();
+
+    const finalize = async () => {
+      // O último "dataavailable" chega antes do evento "stop": só aqui o áudio está completo.
+      try {
+        await context.close();
+      } catch {
+        // contexto já fechado
+      }
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      log(
+        `captura encerrada (${reason}) — fala: ${speechDetected ? "sim" : "não"}`,
+        `| pico ${(peak * 100).toFixed(0)}% | ${bytes} bytes | blob ${blob.size} bytes`
+      );
+      resetMicLevel();
+      resolve({ blob, speechDetected, bytes });
+    };
+
+    const finish = (why) => {
+      if (finished) return;
+      finished = true;
+      reason = why;
+      window.clearInterval(timer);
+      captureRunning = false;
+      // Não monta o áudio aqui: quem monta é o evento "stop", depois do último bloco.
+      if (recorder.state === "inactive") void finalize();
+      else recorder.stop();
+    };
+
+    recorder.addEventListener("stop", () => void finalize(), { once: true });
+
+    const timer = window.setInterval(() => {
+      if (finished) return;
+      if (captureStopRequest) {
+        finish("parada manual");
+        return;
+      }
+      const level = audioLevel(analyser, buffer);
+      if (level > peak) peak = level;
+      const now = performance.now();
+      const delta = now - lastTick;
+      lastTick = now;
+      const elapsed = now - startedAt;
+      const speaking = level >= threshold;
+      if (speaking) {
+        if (!speechDetected) log("fala detectada — paro quando você ficar em silêncio");
+        speechDetected = true;
+        speechMs += delta;
+        silenceMs = 0;
+      } else if (speechDetected) {
+        silenceMs += delta;
+      }
+      setMicLevel(level, {
+        hot: speaking,
+        silent: !speechDetected && elapsed > 2500 && peak < threshold,
+      });
+      if (now - lastLevelLog >= 1000) {
+        lastLevelLog = now;
+        log(
+          `nível ${(level * 100).toFixed(0)}% (limiar ${(threshold * 100).toFixed(0)}%)`,
+          `· fala ${speechMs.toFixed(0)} ms · silêncio ${silenceMs.toFixed(0)} ms`,
+          `· ${Math.round(bytes / 1024)} KB · ${elapsed.toFixed(0)} ms`
+        );
+      }
+      // O rótulo fica simples: os detalhes técnicos vivem no terminal de debug.
+      setState("listening", speechDetected ? activeLabel : idleLabel);
+
+      // A fala conta por tempo acumulado acima do limiar: um estalo de ruído não encerra nada.
+      if (speechDetected && speechMs >= VAD_MIN_MS && silenceMs >= VAD_SILENCE_MS) {
+        finish("silêncio após a fala");
+        return;
+      }
+      if (elapsed >= maxMs) {
+        finish("tempo máximo");
+        return;
+      }
+      if (!speechDetected && elapsed >= fallbackMs) finish("envio de segurança sem detectar fala");
+    }, VAD_POLL_MS);
+  });
 }
 
-async function scanWakeChunk(blob) {
-  if (!wakeEnabled || wakeBusy || !blob.size) return;
-  if (currentAudio && !currentAudio.paused) {
-    window.setTimeout(scheduleWakeClip, 1000);
+// Espera o áudio da resposta terminar para o microfone não escutar a própria voz.
+async function waitWhileSpeaking() {
+  while (currentAudio && !currentAudio.paused) {
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+  }
+}
+
+async function listenForWake() {
+  while (wakeEnabled && wakeStream) {
+    await waitWhileSpeaking();
+    if (!wakeEnabled) break;
+    const capture = await captureSpeech(wakeStream, {
+      maxMs: 20000,
+      fallbackMs: 8000,
+      idleLabel: idleVoiceLabel(),
+      activeLabel: "Ouvindo…",
+    });
+    if (!wakeEnabled) break;
+    // Sem fala detectada e com áudio desprezível, apenas continua escutando em silêncio.
+    if (!capture.speechDetected && capture.bytes < 8000) continue;
+    await handleWakeClip(capture.blob);
+  }
+}
+
+// Cada fala renova a janela de conversa: o assistente só volta a exigir a alcunha
+// depois de ficar um tempo sem ouvir nada.
+function startConversation(message) {
+  conversationUntil = performance.now() + conversationSeconds * 1000;
+  log(`conversa ativa por ${conversationSeconds}s — próxima fala não precisa de alcunha`);
+  void sendMessage(message);
+}
+
+async function handleWakeClip(blob) {
+  if (!wakeEnabled) return;
+  if (!blob.size) {
+    log("alcunha: nenhum áudio gravado neste ciclo");
     return;
   }
-  wakeBusy = true;
+  const startedAt = performance.now();
   try {
-    const response = await fetch("/api/transcribe", {
+    const response = await fetch("/api/transcribe?scan_wake=true", {
       method: "POST",
       headers: { "Content-Type": blob.type || "audio/webm" },
       body: blob,
     });
-    if (!response.ok) return;
+    if (!response.ok) {
+      logWarn("alcunha: /api/transcribe respondeu HTTP", response.status);
+      return;
+    }
     const result = await response.json();
-    const transcript = result.text?.trim();
-    if (!transcript) return;
+    const transcript = (result.text || "").trim();
+    log(
+      `alcunha: transcrevi "${transcript}" (confiança ${result.confidence})`,
+      "| wake:", JSON.stringify(result.wake),
+      `| ${Math.round(performance.now() - startedAt)} ms`
+    );
+    if (!transcript) {
+      setState("listening", "Ouvi um som, mas não entendi as palavras. Fale mais perto do microfone.");
+      return;
+    }
 
     const now = performance.now();
-    const invocation = matchWakePhrase(transcript);
-    if (invocation) {
-      wakeFollowupUntil = invocation.query ? 0 : now + followUpSeconds * 1000;
-      input.value = invocation.query || "Oi, pode falar comigo.";
-      if (!invocation.query) skipNextSpeech = true;
-      form.requestSubmit();
+    if (result.wake) {
+      const query = (result.wake.query || "").trim();
+      log("alcunha detectada:", result.wake.phrase, "| pergunta:", query || "(só a saudação)");
+      if (query) {
+        startConversation(query);
+      } else {
+        wakeFollowupUntil = now + followUpSeconds * 1000;
+        void sendMessage("Oi, pode falar comigo.");
+      }
       return;
     }
-    if (wakeFollowupUntil && now <= wakeFollowupUntil) {
+    if (now <= wakeFollowupUntil) {
+      log("janela de continuação aberta — enviando sem alcunha");
       wakeFollowupUntil = 0;
-      input.value = transcript;
-      form.requestSubmit();
+      startConversation(transcript);
       return;
     }
-    if (wakeFollowupUntil && now > wakeFollowupUntil) wakeFollowupUntil = 0;
+    if (now <= conversationUntil) {
+      log(`conversa ativa (mais ${Math.round((conversationUntil - now) / 1000)}s) — enviando sem alcunha`);
+      startConversation(transcript);
+      return;
+    }
+    if (conversationUntil) {
+      conversationUntil = 0;
+      log("conversa encerrada por falta de fala — volte a usar a alcunha");
+    }
+    setState("listening", `Diga "${wakeLabel}" para falar comigo.`);
   } catch {
     setState("error", "Falha no reconhecimento local. Tente desligar e ligar as alcunhas.");
-  } finally {
-    wakeBusy = false;
-    if (wakeEnabled) scheduleWakeClip();
   }
 }
 
-function scheduleWakeClip() {
-  if (!wakeEnabled || !wakeStream || wakeBusy) return;
-  wakeRecorder = new MediaRecorder(wakeStream);
-  const clipRecorder = wakeRecorder;
-  const clipChunks = [];
-  clipRecorder.addEventListener("dataavailable", (event) => {
-    if (event.data.size) clipChunks.push(event.data);
-  });
-  clipRecorder.addEventListener("stop", () => {
-    if (wakeRecorder === clipRecorder) wakeRecorder = null;
-    void scanWakeChunk(new Blob(clipChunks, { type: clipRecorder.mimeType || "audio/webm" }));
-  }, { once: true });
-  clipRecorder.start();
-  wakeClipTimer = window.setTimeout(() => {
-    if (clipRecorder.state === "recording") clipRecorder.stop();
-  }, 6000);
-}
+// A captura é contínua com VAD (captureSpeech): não há mais clipes fixos de 6s,
+// que cortavam a fala no meio e atrasavam a resposta.
+
+const wakeModeStorageKey = "assistant-wake-mode";
 
 async function setWakeMode(enabled) {
+  window.localStorage.setItem(wakeModeStorageKey, enabled ? "1" : "0");
+  log("alcunhas:", enabled ? "ligando…" : "desligando");
   if (!enabled) {
     wakeEnabled = false;
-    window.clearTimeout(wakeClipTimer);
+    captureStopRequest = true;
     wakeRecorder?.stop();
     wakeStream?.getTracks().forEach((track) => track.stop());
     wakeRecorder = null;
     wakeStream = null;
     wakeFollowupUntil = 0;
+    conversationUntil = 0;
     wakeModeButton.classList.remove("active");
     wakeModeButton.setAttribute("aria-pressed", "false");
     wakeModeButton.textContent = "Ativar alcunhas";
@@ -162,18 +537,19 @@ async function setWakeMode(enabled) {
     return;
   }
   try {
-    wakeStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    wakeStream = await openMicrophone();
     wakeEnabled = true;
-    scheduleWakeClip();
+    captureStopRequest = false;
+    log("alcunhas ligadas —", describeTrack(wakeStream));
+    void refreshMicDevices();
     wakeModeButton.classList.add("active");
     wakeModeButton.setAttribute("aria-pressed", "true");
     wakeModeButton.textContent = "Alcunhas ligadas · desligar";
     recordButton.disabled = true;
-    setState("listening", "Estou monitorando as alcunhas localmente. Toque para desligar.");
-  } catch {
-    window.clearTimeout(wakeClipTimer);
+    setState("listening", idleVoiceLabel());
+    void listenForWake();
+  } catch (error) {
+    logWarn("falha ao acessar o microfone para as alcunhas:", error);
     wakeStream?.getTracks().forEach((track) => track.stop());
     wakeStream = null;
     wakeEnabled = false;
@@ -202,6 +578,8 @@ function finishPlayback() {
   if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
   currentAudioUrl = null;
   stopSpeakingButton.hidden = true;
+  // A resposta terminou: libera o tempo cheio de conversa antes de exigir a alcunha de novo.
+  if (conversationActive()) conversationUntil = performance.now() + conversationSeconds * 1000;
   showReadyState();
 }
 
@@ -216,8 +594,12 @@ async function speakAnswer(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
-    if (!response.ok) return;
+    if (!response.ok) {
+      logWarn("síntese de voz indisponível:", response.status);
+      return;
+    }
     const audioBlob = await response.blob();
+    log("áudio de voz:", audioBlob.size, "bytes");
     if (!audioBlob.size) return;
     currentAudioUrl = URL.createObjectURL(audioBlob);
     currentAudio = new Audio(currentAudioUrl);
@@ -253,14 +635,14 @@ stopSpeakingButton.addEventListener("click", async () => {
   }
 });
 
-async function transcribeRecording(blob) {
-  if (!blob.size) {
-    setState("idle", "Não captei áudio. Tente novamente.");
+async function transcribeAndSend(blob) {
+  if (blob.size < 3000) {
+    logWarn("transcrição abortada: apenas", blob.size, "bytes de áudio");
+    setState("idle", "Gravei quase nada. Confira o microfone em chrome://settings/content/microphone e permita o acesso.");
     return;
   }
-  recordButton.disabled = true;
-  recordLabel.textContent = "Transcrevendo…";
   setState("transcribing", "Estou entendendo sua fala…");
+  const startedAt = performance.now();
   try {
     const response = await fetch("/api/transcribe", {
       method: "POST",
@@ -268,61 +650,60 @@ async function transcribeRecording(blob) {
       body: blob,
     });
     const result = await response.json();
+    log(`transcrição (${Math.round(performance.now() - startedAt)} ms, ${blob.size} bytes):`, JSON.stringify(result));
     if (!response.ok) throw new Error(result.detail || "Não consegui transcrever o áudio.");
-    input.value = result.text || "";
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
-    input.focus();
-    setState("idle", result.text
-      ? `Transcrição pronta (confiança ${(result.confidence * 100).toFixed(0)}%). Revise e envie.`
-      : "Não reconheci palavras. Tente falar um pouco mais perto do microfone.");
+    const text = (result.text || "").trim();
+    if (!text) {
+      setState("idle", "Não reconheci palavras. Tente falar um pouco mais perto do microfone.");
+      return;
+    }
+    // Envio automático: basta parar de falar, sem clicar em "Enviar".
+    void sendMessage(text);
   } catch (error) {
     setState("error", error.message || "Falha ao transcrever o áudio.");
-  } finally {
-    recordButton.disabled = false;
-    recordLabel.textContent = "Falar";
   }
 }
 
 recordButton.addEventListener("click", async () => {
-  if (recorder?.state === "recording") {
-    window.clearTimeout(recordingTimeout);
-    recorder.stop();
-    recordButton.classList.remove("recording");
-    recordButton.setAttribute("aria-pressed", "false");
+  if (captureRunning) {
+    // Um segundo toque encerra a captura na hora.
+    log("botão Falar: encerrando a captura a pedido");
+    captureStopRequest = true;
     recordLabel.textContent = "Transcrevendo…";
-    setState("transcribing", "Estou entendendo sua fala…");
     return;
   }
+  log("botão Falar: iniciando");
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     setState("error", "Este navegador não oferece gravação de áudio.");
     return;
   }
   try {
-    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    recordingChunks = [];
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus" : "";
-    recorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
-    recorder.addEventListener("dataavailable", (event) => {
-      if (event.data.size) recordingChunks.push(event.data);
-    });
-    recorder.addEventListener("stop", () => {
-      recordingStream?.getTracks().forEach((track) => track.stop());
-      recordingStream = null;
-      void transcribeRecording(new Blob(recordingChunks, { type: recorder.mimeType || "audio/webm" }));
-    }, { once: true });
-    recorder.start();
+    const stream = await openMicrophone();
+    log("microfone obtido —", describeTrack(stream));
+    void refreshMicDevices();
+    captureRunning = true;
+    captureStopRequest = false;
     recordButton.classList.add("recording");
     recordButton.setAttribute("aria-pressed", "true");
-    recordLabel.textContent = "Parar";
-    setState("listening", "Estou ouvindo… toque em Parar quando terminar.");
-    recordingTimeout = window.setTimeout(() => {
-      if (recorder?.state === "recording") recordButton.click();
-    }, 30000);
-  } catch {
-    recordingStream?.getTracks().forEach((track) => track.stop());
-    recordingStream = null;
+    recordLabel.textContent = "Estou ouvindo…";
+    setState("listening", "Calibrando o microfone…");
+    const capture = await captureSpeech(stream, {
+      maxMs: 30000,
+      fallbackMs: 8000,
+      idleLabel: "Fale a sua pergunta",
+      activeLabel: "Ouvindo…",
+    });
+    stream.getTracks().forEach((track) => track.stop());
+    recordButton.classList.remove("recording");
+    recordButton.setAttribute("aria-pressed", "false");
+    recordLabel.textContent = "Falar";
+    await transcribeAndSend(capture.blob);
+  } catch (error) {
+    logWarn("falha ao obter o microfone:", error);
+    captureRunning = false;
+    recordButton.classList.remove("recording");
+    recordButton.setAttribute("aria-pressed", "false");
+    recordLabel.textContent = "Falar";
     setState("error", "Não consegui acessar o microfone. Confira a permissão do navegador.");
   }
 });
@@ -334,8 +715,19 @@ fetch("/api/config/public")
       assistantName.textContent = config.assistant_name;
       document.title = `${config.assistant_name} — Assistente local`;
     }
-    wakePhrases = Array.isArray(config.wake_phrases) ? config.wake_phrases : [];
+    wakeLabel = Array.isArray(config.wake_phrases) && config.wake_phrases.length
+      ? String(config.wake_phrases[0]) : wakeLabel;
     followUpSeconds = Number(config.follow_up_seconds) || 8;
+    conversationSeconds = Number(config.conversation_seconds) || 60;
+    log(
+      "configuração recebida — alcunhas:", config.wake_phrases,
+      "| continuação:", followUpSeconds, "s",
+      "| conversa:", conversationSeconds, "s"
+    );
+    if (window.localStorage.getItem(wakeModeStorageKey) === "1") {
+      // Reativa as alcunhas ao abrir a página, sem precisar clicar de novo.
+      void setWakeMode(true);
+    }
   })
   .catch(() => {});
 
@@ -345,15 +737,59 @@ window.setInterval(checkHealth, 15000);
 let skipNextSpeech = false;
 wakeModeButton.addEventListener("click", () => void setWakeMode(!wakeEnabled));
 
+// Trocar o microfone na interface passa a valer imediatamente e fica salvo no navegador.
+micSelect?.addEventListener("change", async () => {
+  chosenMicId = micSelect.value;
+  window.localStorage.setItem(micStorageKey, chosenMicId);
+  log("microfone escolhido:", micSelect.selectedOptions[0]?.textContent);
+  checkMicChoice();
+  if (wakeEnabled) {
+    wakeEnabled = false;
+    captureStopRequest = true;
+    wakeStream?.getTracks().forEach((track) => track.stop());
+    wakeStream = null;
+    await setWakeMode(true);
+  }
+});
+
+navigator.mediaDevices?.addEventListener?.("devicechange", () => void refreshMicDevices());
+void refreshMicDevices();
+log("interface iniciada — chat, voz e painel de debug prontos");
+chatToggle.addEventListener("click", () => setChatOpen(!terminal.classList.contains("chat-open")));
+chatClose.addEventListener("click", () => setChatOpen(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (terminal.classList.contains("chat-open")) setChatOpen(false);
+  if (terminal.classList.contains("debug-open")) setDebugOpen(false);
+});
+
+// Painel de debug: terminal com o microfone, o nível e os logs desta sessão.
+debugToggle.addEventListener("click", () => setDebugOpen(!terminal.classList.contains("debug-open")));
+debugClose.addEventListener("click", () => setDebugOpen(false));
+debugClear.addEventListener("click", () => {
+  logLines.length = 0;
+  if (debugLog) debugLog.textContent = "";
+});
+debugCopy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(logLines.join("\n"));
+    log("logs copiados para a área de transferência");
+  } catch (error) {
+    logWarn("não consegui copiar os logs:", error);
+  }
+});
+
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
 });
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const message = input.value.trim();
+// Envio da mensagem: usado pelo chat digitado, pelo botão de microfone e pelas alcunhas.
+async function sendMessage(rawMessage) {
+  const message = (rawMessage || "").trim();
   if (!message || sendButton.disabled) return;
+  log("enviando ao backend:", message.slice(0, 120));
+  const startedAt = performance.now();
 
   addBubble("user", message);
   if (currentAudio) {
@@ -374,6 +810,11 @@ form.addEventListener("submit", async (event) => {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "Não consegui responder agora.");
+    log(
+      `resposta em ${Math.round(performance.now() - startedAt)} ms`,
+      "| ferramentas:", JSON.stringify(result.used_tools),
+      "| fontes:", result.sources?.length || 0
+    );
     if (result.session_id && result.session_id !== sessionId) {
       sessionId = result.session_id;
       sessionStorage.setItem(sessionStorageKey, sessionId);
@@ -406,6 +847,7 @@ form.addEventListener("submit", async (event) => {
     showReadyState();
     checkHealth();
   } catch (error) {
+    logWarn("falha no /api/chat:", error);
     pending.textContent = error.message || "Não consegui acessar o assistente.";
     pending.classList.add("error");
     setState("error", "Tive um problema. Confira a conexão e tente novamente.");
@@ -415,4 +857,9 @@ form.addEventListener("submit", async (event) => {
     input.focus();
     conversation.scrollTop = conversation.scrollHeight;
   }
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void sendMessage(input.value);
 });

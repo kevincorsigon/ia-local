@@ -1,7 +1,6 @@
 .env
 data/
 backend/models/
-piper/voices/
 __pycache__/
 *.py[cod]
 .venv/
