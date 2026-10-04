@@ -1,0 +1,14 @@
+assistant:
+  name: Kunica
+  personality: "Amigável, espontânea e direta."
+  language: pt-BR
+  wake_phrases:
+    - kunica
+    - tvzinha
+    - tv
+    - minha puta
+    - ei tv
+    - eae tv
+  follow_up_seconds: 8
+  max_history_turns: 8
+  session_ttl_minutes: 30

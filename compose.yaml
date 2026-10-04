@@ -1,0 +1,42 @@
+name: assistente-local
+
+services:
+  backend:
+    build: ./backend
+    profiles: [core]
+    environment:
+      ASSISTANT_CONFIG: /app/config/assistant.yaml
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-180}
+      MAX_MESSAGE_CHARS: ${MAX_MESSAGE_CHARS:-4000}
+      MAX_RESPONSE_TOKENS: ${MAX_RESPONSE_TOKENS:-400}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/assistant.yaml:/app/config/assistant.yaml:ro
+    expose: ["8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build: ./frontend
+    profiles: [core]
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

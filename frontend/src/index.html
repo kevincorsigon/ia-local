@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101827" />
+    <title>Assistente local</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">☺</div>
+        <div>
+          <p class="eyebrow">ASSISTENTE LOCAL</p>
+          <h1 id="assistant-name">Kunica</h1>
+        </div>
+        <span id="connection" class="connection" aria-live="polite">Conferindo Ollama…</span>
+      </header>
+
+      <section class="assistant-stage" aria-label="Estado da assistente">
+        <div id="face" class="face state-idle" role="img" aria-label="Kunica está esperando">
+          <span class="eye eye-left"></span>
+          <span class="eye eye-right"></span>
+          <span class="mouth"></span>
+        </div>
+        <p id="state-label" class="state-label">Estou aqui. Pode falar comigo por texto.</p>
+      </section>
+
+      <section id="conversation" class="conversation" aria-live="polite" aria-label="Conversa">
+        <div class="empty-state" id="empty-state">Sua conversa fica nesta tela. As mensagens não são salvas.</div>
+      </section>
+
+      <form id="chat-form" class="composer">
+        <label class="sr-only" for="message">Sua mensagem</label>
+        <textarea id="message" name="message" rows="1" maxlength="4000" placeholder="Escreva uma mensagem…" required></textarea>
+        <button id="send" type="submit" aria-label="Enviar mensagem">
+          <span>Enviar</span><span aria-hidden="true">↗</span>
+        </button>
+      </form>
+      <p class="local-note">As respostas são geradas pelo Ollama no seu próprio computador.</p>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
