@@ -138,8 +138,9 @@ O reconhecimento precisa funcionar localmente. A implementação pode usar OpenW
 | `POST /api/chat` | `{message, session_id}` | resposta, fontes e estado | conversa por texto |
 | `POST /api/transcribe` | áudio WebM/WAV | `{text, confidence}` | fala para texto |
 | `POST /api/speak` | `{text}` | áudio WAV | texto para fala |
-| `WS /api/conversation` | eventos de sessão | eventos de estado e resposta | interação por voz |
 | `GET /api/config/public` | — | nome e opções visuais seguras | personalização da UI |
+
+O MVP usa requisições HTTP discretas para chat e clipes de áudio; WebSocket/streaming contínuo fica fora da implementação inicial.
 
 Não expor senhas, chaves ou configuração interna por rotas públicas.
 
@@ -207,11 +208,11 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 | 1 — Ollama e chat textual | `[~]` | Backend, interface, checagem de saúde e chat implementados; ainda não executados contra o Ollama real. |
 | 2 — Persona e contexto | `[~]` | YAML, nome/persona, sessão em memória, limite de turnos e TTL implementados; falta validar comportamento em execução. |
 | 3 — Ferramentas atuais | `[~]` | Clima e Brave Search ligados ao roteador/chat com fontes na UI; pesquisa exige chave e falta validar em execução. |
-| 4 — Síntese de voz | `[ ]` | Não iniciada. |
-| 5 — Reconhecimento de voz | `[ ]` | Não iniciado. |
-| 6 — Rosto animado | `[~]` | Rosto CSS básico e estados de espera/pensando/erro existem; faltam estados de microfone/fala e ligação ao áudio. |
-| 7 — Alcunhas/ativação por voz | `[~]` | Alcunhas e janela de continuação constam na configuração; detector e fluxo de microfone ainda não implementados. |
-| 8 — Empacotamento/operação | `[~]` | Dockerfiles, Compose e bootstrap criados; faltam serviços de voz, execução no Ubuntu e documentação operacional final. |
+| 4 — Síntese de voz | `[~]` | Piper, endpoint, modelo local e reprodução automática implementados; falta validar instalação/áudio no WSL e Ubuntu. |
+| 5 — Reconhecimento de voz | `[~]` | Endpoint Vosk/FFmpeg e botão para gravar/transcrever implementados; falta validação com microfone real. |
+| 6 — Rosto animado | `[~]` | Rosto CSS integrado aos estados de espera, microfone, pensamento, fala e erro; falta validação visual no navegador. |
+| 7 — Alcunhas/ativação por voz | `[~]` | Modo opcional implementado com clipes independentes de 6 segundos, Vosk local, detecção de alcunhas e janela de continuação; falta validar falsos positivos, desempenho e microfone no J5040. |
+| 8 — Empacotamento/operação | `[~]` | Compose e bootstrap incluem Ollama no host, backend, frontend e Piper; falta validar build e execução no Ubuntu. |
 | 9 — Aceitação/desempenho | `[ ]` | Não iniciada; depende de executar o conjunto no J5040. |
 
 ### Fase 0 — Preparação do repositório e decisões operacionais
@@ -256,7 +257,7 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 ### Fase 4 — Síntese de voz
 
-**Estado:** `[ ]` não iniciada.
+**Estado:** `[~]` serviço Piper, endpoint `/api/speak`, voz pt-BR e reprodução/controle no navegador implementados; execução e qualidade de áudio ainda não validadas no WSL/Ubuntu.
 
 **Objetivo:** transformar respostas em áudio pt-BR.
 
@@ -266,7 +267,7 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 ### Fase 5 — Captura e reconhecimento de voz
 
-**Estado:** `[ ]` não iniciado.
+**Estado:** `[~]` captura manual, endpoint Vosk/FFmpeg, transcrição editável e modo opcional de escuta contínua implementados; validação com microfone real e desempenho pendentes.
 
 **Objetivo:** permitir pergunta falada pelo navegador.
 
@@ -276,7 +277,7 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 ### Fase 6 — Rosto animado
 
-**Estado:** `[~]` layout e animação CSS básica implementados; integração completa com voz pendente.
+**Estado:** `[~]` layout e animação CSS estão ligados aos estados do chat e da reprodução Piper; validação no navegador pendente.
 
 **Objetivo:** criar identidade visual leve e reativa.
 
@@ -286,17 +287,17 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 ### Fase 7 — Alcunhas e ativação por voz
 
-**Estado:** `[~]` frases já estão em `config/assistant.yaml`; detecção local ainda pendente.
+**Estado:** `[~]` frases em `config/assistant.yaml` e detecção por transcrição Vosk em trechos curtos implementadas; falta medir falsos positivos/falsos negativos e validar no J5040. OpenWakeWord não foi adotado nesta implementação inicial.
 
 **Objetivo:** iniciar conversa ao chamar o assistente pelas alcunhas configuradas, sem clicar e sem gravar áudio continuamente em disco.
 
-**Tarefas:** implementar configuração de nome, alcunhas e frases; avaliar OpenWakeWord local para português e comparar com Vosk usando gramática restrita; executar detecção local em processo separado; habilitar somente por opção; exibir indicador de escuta persistente; usar ring buffer curto em memória e nunca gravar áudio por padrão; recortar e processar a fala seguinte à invocação; responder a saudações isoladas e abrir janela de continuação configurável; manter acionamento manual como alternativa; registrar taxa de falso positivo/falso negativo em teste manual.
+**Tarefas:** implementar configuração de nome, alcunhas e frases; avaliar OpenWakeWord local para português e comparar com Vosk usando gramática restrita; manter o reconhecimento habilitado somente por opção; exibir indicador de escuta persistente; capturar clipes independentes curtos em memória e nunca gravar áudio por padrão; processar a fala seguinte à invocação; responder a saudações isoladas e abrir janela de continuação configurável; manter acionamento manual como alternativa; registrar taxa de falso positivo/falso negativo em teste manual.
 
-**Aceite:** cada alcunha configurada ativa o assistente em pt-BR no Ubuntu; “fala comigo, Kunica, [pergunta]” processa a pergunta na mesma fala; uma chamada sem pergunta recebe saudação e abre janela de continuação; expirar a janela retorna ao modo de espera; desligar o recurso interrompe acesso ao microfone; detecção não bloqueia UI nem chat textual e não persiste áudio.
+**Aceite:** cada alcunha configurada ativa o assistente em pt-BR no Ubuntu; “fala comigo, Kunica, [pergunta]” processa a pergunta na mesma fala quando couber no clipe capturado; uma chamada sem pergunta recebe saudação e abre janela de continuação; expirar a janela retorna ao modo de espera; desligar o recurso interrompe acesso ao microfone; detecção não bloqueia UI nem chat textual e não persiste áudio.
 
 ### Fase 8 — Empacotamento, operação e desempenho
 
-**Estado:** `[~]` Compose e bootstrap do núcleo textual existem; perfis de voz/wakeword e validação no Ubuntu estão pendentes.
+**Estado:** `[~]` Compose e bootstrap preparam Vosk/Piper e iniciam os serviços de voz; perfil e validação de wakeword, build e execução no Ubuntu pendentes.
 
 **Objetivo:** tornar a implantação repetível no Ubuntu.
 

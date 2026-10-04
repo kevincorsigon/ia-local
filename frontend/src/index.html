@@ -25,6 +25,8 @@
           <span class="mouth"></span>
         </div>
         <p id="state-label" class="state-label">Estou aqui. Pode falar comigo por texto.</p>
+        <button id="stop-speaking" class="quiet-button" type="button" hidden>Parar áudio</button>
+        <button id="wake-mode" class="quiet-button" type="button" aria-pressed="false">Ativar alcunhas</button>
       </section>
 
       <section id="conversation" class="conversation" aria-live="polite" aria-label="Conversa">
@@ -34,6 +36,9 @@
       <form id="chat-form" class="composer">
         <label class="sr-only" for="message">Sua mensagem</label>
         <textarea id="message" name="message" rows="1" maxlength="4000" placeholder="Escreva uma mensagem…" required></textarea>
+        <button id="record" class="mic-button" type="button" aria-pressed="false" aria-label="Gravar pergunta">
+          <span aria-hidden="true">●</span><span id="record-label">Falar</span>
+        </button>
         <button id="send" type="submit" aria-label="Enviar mensagem">
           <span>Enviar</span><span aria-hidden="true">↗</span>
         </button>

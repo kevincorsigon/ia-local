@@ -1,5 +1,7 @@
 import os
 import logging
+import asyncio
+import json
 import time
 import uuid
 from pathlib import Path
@@ -7,8 +9,9 @@ from typing import Any
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
+from starlette.responses import Response
 
 from app.tools import ToolUnavailable, route_question, weather_tool, web_search_tool
 
@@ -19,6 +22,9 @@ CHAT_TIMEOUT_SECONDS = float(os.getenv("CHAT_TIMEOUT_SECONDS", "180"))
 MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "4000"))
 MAX_RESPONSE_TOKENS = int(os.getenv("MAX_RESPONSE_TOKENS", "400"))
 ASSISTANT_CONFIG = os.getenv("ASSISTANT_CONFIG", "/app/config/assistant.yaml")
+VOSK_MODEL_PATH = Path(os.getenv("VOSK_MODEL_PATH", "/models/vosk-model-small-pt-0.3"))
+PIPER_URL = os.getenv("PIPER_URL", "http://piper:5000").rstrip("/")
+MAX_AUDIO_BYTES = 15 * 1024 * 1024
 
 
 def load_assistant_config() -> dict[str, Any]:
@@ -35,6 +41,9 @@ PERSONALITY = str(ASSISTANT_SETTINGS.get("personality") or "Amigável, espontân
 MAX_HISTORY_TURNS = max(0, int(ASSISTANT_SETTINGS.get("max_history_turns", 8)))
 SESSION_TTL_SECONDS = max(60, int(ASSISTANT_SETTINGS.get("session_ttl_minutes", 30)) * 60)
 SESSIONS: dict[str, dict[str, Any]] = {}
+VOSK_MODEL: Any | None = None
+VOSK_MODEL_LOCK = asyncio.Lock()
+VOSK_RECOGNITION_LOCK = asyncio.Lock()
 
 app = FastAPI(title="Assistente local", version="0.1.0")
 logger = logging.getLogger("assistant")
@@ -90,8 +99,12 @@ async def health() -> dict[str, str | bool]:
 
 
 @app.get("/api/config/public")
-async def public_config() -> dict[str, str]:
-    return {"assistant_name": ASSISTANT_NAME}
+async def public_config() -> dict[str, Any]:
+    return {
+        "assistant_name": ASSISTANT_NAME,
+        "wake_phrases": ASSISTANT_SETTINGS.get("wake_phrases", []),
+        "follow_up_seconds": ASSISTANT_SETTINGS.get("follow_up_seconds", 8),
+    }
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -194,3 +207,97 @@ async def chat(request: ChatRequest) -> ChatResponse:
         sources=tool_result.get("sources", []) if tool_result else [],
         session_id=session_id,
     )
+
+
+async def get_vosk_model() -> Any:
+    global VOSK_MODEL
+    if VOSK_MODEL is not None:
+        return VOSK_MODEL
+    async with VOSK_MODEL_LOCK:
+        if VOSK_MODEL is not None:
+            return VOSK_MODEL
+        if not VOSK_MODEL_PATH.is_dir():
+            raise HTTPException(status_code=503, detail="Modelo Vosk pt-BR ausente. Rode ./scripts/bootstrap.sh para instalar os recursos de voz.")
+        try:
+            from vosk import Model
+
+            VOSK_MODEL = await asyncio.to_thread(Model, str(VOSK_MODEL_PATH))
+        except (ImportError, RuntimeError, OSError) as exc:
+            logger.warning("Could not load Vosk model")
+            raise HTTPException(status_code=503, detail="Não consegui carregar o modelo local de reconhecimento de fala.") from exc
+    return VOSK_MODEL
+
+
+@app.post("/api/transcribe")
+async def transcribe(request: Request) -> dict[str, str | float]:
+    declared_length = request.headers.get("content-length")
+    if declared_length and declared_length.isdigit() and int(declared_length) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="O áudio excede o limite de 15 MB.")
+    encoded_buffer = bytearray()
+    async for chunk in request.stream():
+        encoded_buffer.extend(chunk)
+        if len(encoded_buffer) > MAX_AUDIO_BYTES:
+            raise HTTPException(status_code=413, detail="O áudio excede o limite de 15 MB.")
+    encoded = bytes(encoded_buffer)
+    if not encoded:
+        raise HTTPException(status_code=400, detail="O áudio enviado está vazio.")
+    if len(encoded) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="O áudio excede o limite de 15 MB.")
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-nostdin", "-v", "error", "-i", "pipe:0", "-t", "60", "-f", "s16le",
+            "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail="Não consegui converter este áudio. Tente gravar novamente.") from exc
+    try:
+        pcm, _ = await asyncio.wait_for(process.communicate(encoded), timeout=20)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise HTTPException(status_code=408, detail="A conversão do áudio demorou demais. Tente um trecho menor.") from exc
+    if process.returncode != 0 or not pcm:
+        raise HTTPException(status_code=415, detail="Formato de áudio não suportado. Grave novamente pelo navegador.")
+
+    model = await get_vosk_model()
+    try:
+        def recognize() -> tuple[str, float]:
+            from vosk import KaldiRecognizer
+
+            recognizer = KaldiRecognizer(model, 16000)
+            recognizer.SetWords(True)
+            for offset in range(0, len(pcm), 4000):
+                recognizer.AcceptWaveform(pcm[offset:offset + 4000])
+            result = json.loads(recognizer.FinalResult())
+            words = result.get("result", [])
+            confidence = sum(float(word.get("conf", 0)) for word in words) / len(words) if words else 0.0
+            return str(result.get("text", "")).strip(), confidence
+
+        # Serialize recognition jobs: the target CPU has few cores and the
+        # wake mode may submit clips repeatedly while another client is active.
+        async with VOSK_RECOGNITION_LOCK:
+            text, confidence = await asyncio.to_thread(recognize)
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.warning("Speech transcription failed")
+        raise HTTPException(status_code=502, detail="Não consegui reconhecer essa fala. Tente novamente.") from exc
+    return {"text": text, "confidence": round(confidence, 3)}
+
+
+@app.post("/api/speak")
+async def speak(request: dict[str, str]) -> Response:
+    text = request.get("text", "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Não há texto para falar.")
+    if len(text) > 2000:
+        raise HTTPException(status_code=413, detail="A resposta é longa demais para sintetizar de uma vez.")
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(f"{PIPER_URL}/synthesize", json={"text": text})
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Síntese de voz indisponível; a resposta escrita continua disponível.") from exc
+    return Response(content=response.content, media_type="audio/wav")

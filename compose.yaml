@@ -6,6 +6,8 @@ services:
     profiles: [core]
     environment:
       ASSISTANT_CONFIG: /app/config/assistant.yaml
+      VOSK_MODEL_PATH: /models/vosk-model-small-pt-0.3
+      PIPER_URL: http://piper:5000
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
       CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-180}
@@ -16,6 +18,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config/assistant.yaml:/app/config/assistant.yaml:ro
+      - ./backend/models:/models:ro
     expose: ["8000"]
     restart: unless-stopped
     healthcheck:
@@ -40,3 +43,29 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  piper:
+    build: ./piper
+    profiles: [voice]
+    command:
+      - python
+      - -m
+      - piper.http_server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --model
+      - ${PIPER_VOICE:-pt_BR-faber-medium}
+      - --data-dir
+      - /voices
+    volumes:
+      - ./piper/voices:/voices:ro
+    expose: ["5000"]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/info', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

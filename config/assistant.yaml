@@ -9,6 +9,8 @@ assistant:
     - minha puta
     - ei tv
     - eae tv
+    - e aí tv
+    - e ai tv
   follow_up_seconds: 8
   max_history_turns: 8
   session_ttl_minutes: 30

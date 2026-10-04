@@ -1,0 +1,22 @@
+# Estes arquivos são consumidos por bash e pelo Docker Compose no Ubuntu/WSL.
+# CRLF quebra os scripts e contamina os valores lidos de .env, então forçamos LF.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+.env text eol=lf
+.env.example text eol=lf
+Dockerfile text eol=lf
+*.conf text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+
+*.onnx binary
+*.zip binary
+*.wav binary
+*.png binary
+*.ico binary
