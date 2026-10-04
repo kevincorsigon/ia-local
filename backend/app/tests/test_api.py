@@ -190,6 +190,34 @@ def test_chat_de_clima_com_cidade_ambigua_pede_escolha(client, external) -> None
     assert calls.payloads(CHAT_ROUTE) == []
 
 
+def test_chat_de_clima_de_cidade_conhecida_nao_pede_escolha(client, external) -> None:
+    """A API devolve “São Paulo” com parecidos (Frei Paulo) e homônimos menores: não vale perguntar."""
+    calls = external(
+        {
+            GEO_ROUTE: lambda request: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"name": "São Paulo", "admin1": "São Paulo", "country_code": "BR", "latitude": -23.55, "longitude": -46.63, "population": 10021295},
+                        {"name": "Frei Paulo", "admin1": "Sergipe", "country_code": "BR", "latitude": -10.55, "longitude": -37.53},
+                        {"name": "São Paulo", "admin1": "Alagoas", "country_code": "BR", "latitude": -9.75, "longitude": -36.34, "population": 1500},
+                    ]
+                },
+            ),
+            FORECAST_ROUTE: lambda request: httpx.Response(200, json=FORECAST_REPLY),
+            CHAT_ROUTE: ollama_reply("Vai chover nesta semana."),
+        }
+    )
+
+    payload = client.post(
+        "/api/chat", json={"message": "Qual é a previsão do tempo para hoje em São Paulo?"}
+    ).json()
+
+    assert payload["used_tools"] == ["weather"]
+    assert payload["sources"] == [{"title": "Open-Meteo — previsão do tempo", "url": "https://open-meteo.com/"}]
+    assert calls.unmatched == []
+
+
 def test_chat_de_clima_fora_do_brasil_nao_inventa(client, external) -> None:
     external({GEO_ROUTE: lambda request: httpx.Response(200, json={"results": [{"name": "Lisboa", "country_code": "PT"}]})})
 
@@ -385,7 +413,7 @@ def test_transcribe_rejeita_audio_grande_demais(client, external) -> None:
     assert client.post("/api/transcribe", content=b"\x00" * (main.MAX_AUDIO_BYTES + 1)).status_code == 413
 
 
-@pytest.mark.skipif(not main.VOSK_MODEL_PATH.is_dir(), reason="modelo Vosk não está montado neste ambiente")
+@pytest.mark.skipif(not main.stt.model_ready(), reason="modelo de fala não está disponível neste ambiente")
 def test_transcribe_silencio_devolve_texto_vazio(client) -> None:
     """Exercita FFmpeg + Vosk de verdade: silêncio não pode gerar texto."""
     buffer = io.BytesIO()
@@ -400,7 +428,9 @@ def test_transcribe_silencio_devolve_texto_vazio(client) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"text": "", "confidence": 0.0}
+    payload = response.json()
+    assert payload["text"] == ""
+    assert 0.0 <= payload["confidence"] <= 1.0
 
 
 def test_chat_usa_a_instancia_alternativa_de_ollama(client, external, monkeypatch) -> None:

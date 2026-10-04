@@ -82,6 +82,15 @@ def test_clima_tem_prioridade_sobre_pesquisa() -> None:
         ("Como fica o tempo esta semana em Itapecerica da Serra?", "Itapecerica da Serra"),
         ("Vai chover amanhã em Curitiba?", "Curitiba"),
         ("Qual a previsão para São Vicente?", "São Vicente"),
+        # As palavras de tempo ao redor da cidade não podem ir para a geocodificação:
+        # era isso que fazia a consulta responder "não encontrei uma cidade chamada hoje".
+        ("Qual é a previsão do tempo para hoje em São Paulo?", "São Paulo"),
+        ("Como está o tempo em São Paulo hoje?", "São Paulo"),
+        ("Vai chover em Curitiba amanhã?", "Curitiba"),
+        ("Qual é a temperatura agora em Belo Horizonte?", "Belo Horizonte"),
+        ("Preciso da previsão de hoje em Santos", "Santos"),
+        ("Como fica o tempo no fim de semana em Campos do Jordão?", "Campos do Jordão"),
+        ("Me diga a previsão em São Paulo à noite", "São Paulo"),
     ],
 )
 def test_extrai_cidade_da_pergunta(message: str, expected: str) -> None:

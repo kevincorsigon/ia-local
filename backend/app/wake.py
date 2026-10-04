@@ -61,12 +61,16 @@ def _token_matches(token: str, alias_token: str, relaxed: bool = False) -> bool:
     return relaxed and len(token) > len(alias_token) and ratio >= _RATIO_RELAXED
 
 
-def matches_alias(text: str, alias: str) -> dict[str, Any] | None:
+def matches_alias(
+    text: str, alias: str, label: str | None = None, fuzzy: bool = True
+) -> dict[str, Any] | None:
     """Verifica uma alcunha no texto e devolve a pergunta que veio depois dela.
 
-    Igualdade exata vale em qualquer posição ("fala comigo, Kunica, ..."). A
-    comparação aproximada vale só na primeira palavra, para que "a única opção"
-    ou "a situação econômica" no meio de uma frase não acionem o assistente.
+    Igualdade exata vale em qualquer posição ("fala comigo, Kunica, ..."). A comparação
+    aproximada vale só na primeira palavra, para que "a única opção" ou "a situação
+    econômica" no meio de uma frase não acionem o assistente. ``fuzzy=False`` exige
+    igualdade exata: é o que as variantes medidas usam, senão um "nika" curto casaria com
+    "minha" (0.44) e o assistente acordaria em "minha vizinha chegou agora".
     """
     alias_tokens = normalize(alias).split()
     if not alias_tokens:
@@ -79,28 +83,52 @@ def matches_alias(text: str, alias: str) -> dict[str, Any] | None:
         window = tokens[start:start + len(alias_tokens)]
         exact = all(token == wanted for (token, _), wanted in zip(window, alias_tokens))
         if not exact:
-            if start > 0:
+            if start > 0 or not fuzzy:
                 continue
             relaxed = single_token
             if not all(_token_matches(token, wanted, relaxed) for (token, _), wanted in zip(window, alias_tokens)):
                 continue
         end_index = window[-1][1]
         query = text[end_index:].lstrip(" ,;:!?—-\t")
-        return {"phrase": alias, "query": query.strip()}
+        pergunta = query.strip()
+        if not any(char.isalnum() for char in pergunta):
+            # Sobrou só pontuação ("Oi, TVzinha!"): é uma saudação, não uma pergunta.
+            pergunta = ""
+        return {"phrase": label or alias, "query": pergunta}
     return None
 
 
-def match_wake_phrase(text: str, aliases: list[str]) -> dict[str, Any] | None:
+def alias_forms(alias: str, variants: dict[str, list[str]] | None = None) -> list[str]:
+    """A alcunha e as formas que o reconhecimento costuma escrever no lugar dela."""
+    mapa = variants or {}
+    extras = mapa.get(normalize(alias)) or mapa.get(alias) or []
+    formas = [alias]
+    conhecidas = {normalize(forma) for forma in formas}
+    for extra in extras:
+        texto = str(extra).strip()
+        if texto and normalize(texto) not in conhecidas:
+            formas.append(texto)
+            conhecidas.add(normalize(texto))
+    return formas
+
+
+def match_wake_phrase(
+    text: str, aliases: list[str], variants: dict[str, list[str]] | None = None
+) -> dict[str, Any] | None:
     """Procura as alcunhas da configuração; devolve a primeira (mais longa) que casar.
 
     Alcunhas mais longas têm prioridade para que "eae tv" ganhe de "tv" e o texto
-    depois da alcunha fique correto.
+    depois da alcunha fique correto. As ``variants`` são formas medidas nos motores de
+    fala ("Kunica" não existe no dicionário de nenhum deles) e valem em qualquer posição
+    da frase — é isso que faz "a icônica, que horas são?" acionar o assistente.
     """
     if not text.strip():
         return None
     ordered = sorted((alias for alias in aliases if normalize(alias).strip()), key=len, reverse=True)
     for alias in ordered:
-        found = matches_alias(text, alias)
-        if found:
-            return found
+        for position, forma in enumerate(alias_forms(alias, variants)):
+            # A própria alcunha aceita semelhança; as variantes medidas são texto exato.
+            found = matches_alias(text, forma, label=alias, fuzzy=position == 0)
+            if found:
+                return found
     return None

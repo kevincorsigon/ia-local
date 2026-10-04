@@ -55,7 +55,7 @@ echo "Iniciando os containers..."
 
 echo "Esperando o backend responder..."
 deadline=$((SECONDS + 300))
-until "${COMPOSE[@]}" exec -T backend python -c "import json,pathlib,urllib.request; h=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); urllib.request.urlopen('http://kokoro:8880/health', timeout=5); assert h['ollama']=='ok' and h['model_available'] is True and pathlib.Path('/models/vosk-model-small-pt-0.3').is_dir()" >/dev/null 2>&1; do
+until "${COMPOSE[@]}" exec -T backend python -c "import json,urllib.request; h=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); urllib.request.urlopen('http://kokoro:8880/health', timeout=5); assert h['ollama']=='ok' and h['model_available'] is True and h['speech']['engine']" >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then
     "${COMPOSE[@]}" --profile core --profile voice ps
     echo "Os containers iniciaram, mas o backend e o Kokoro não responderam em 300 segundos." >&2
@@ -63,6 +63,24 @@ until "${COMPOSE[@]}" exec -T backend python -c "import json,pathlib,urllib.requ
   fi
   sleep 3
 done
+
+# O Vosk já tem o modelo montado; o Whisper baixa o modelo (centenas de MB) na primeira vez
+# e guarda no volume de dados, então essa espera só é longa na primeira execução.
+"${COMPOSE[@]}" exec -T backend python -c "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/api/warmup', method='POST'), timeout=15)" >/dev/null 2>&1 || true
+printf 'Preparando o reconhecimento de fala'
+deadline=$((SECONDS + 900))
+until "${COMPOSE[@]}" exec -T backend python -c "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3))['speech']['available'] is True" >/dev/null 2>&1; do
+  if (( SECONDS >= deadline )); then
+    echo ""
+    echo "O reconhecimento de fala ainda não está pronto; o restante do assistente funciona." >&2
+    break
+  fi
+  printf '.'
+  sleep 5
+done
+printf '\n'
+MOTOR="$("${COMPOSE[@]}" exec -T backend python -c "import json,urllib.request; s=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3))['speech']; print(s['engine'] + ' / ' + s['model'])" 2>/dev/null | tr -d '\r' | tail -n 1)"
+echo "Reconhecimento de fala: ${MOTOR:-indefinido}"
 
 echo ""
 echo "Assistente iniciado: http://localhost:$WEB_PORT"

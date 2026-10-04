@@ -36,7 +36,7 @@ O ambiente de desenvolvimento é WSL com Docker. O mesmo conjunto de imagens e a
 | Hardware alvo | Pentium J5040, apenas CPU | Não depender de GPU. |
 | Modelo | `qwen2.5:1.5b` quantizado pelo Ollama do host | Prioriza rapidez e baixa memória. |
 | Idioma | pt-BR obrigatório | Instrução de sistema, exemplos e validação de saída. |
-| STT | Vosk pt-BR na primeira versão | Consumo pequeno e resposta rápida em CPU. |
+| STT | Vosk pt-BR, com modelo escolhido por `VOSK_MODEL_NAME` | O pequeno (31 MB) roda em qualquer CPU, mas erra muito em fala livre (WER ~69%); o grande (1,6 GB, licença GPLv3) erra menos (~54%). |
 | TTS | Kokoro com voz feminina pt-BR `pf_dora` | Síntese local, voz feminina brasileira e cache persistente no host. |
 | Interface | Web local em tela cheia, otimizada para 1024×768 | Funciona na TV retro, no WSL e no Ubuntu sem exigir rolagem na tela principal. |
 | Backend | Python + FastAPI | Integração simples com áudio, Ollama e APIs. |
@@ -277,7 +277,7 @@ Legenda: `[x]` implementação concluída nesta etapa; `[~]` parcial ou aguardan
 
 ### Fase 5 — Captura e reconhecimento de voz
 
-**Estado:** `[~]` captura manual, endpoint Vosk/FFmpeg, transcrição editável e modo opcional de escuta contínua implementados; validação com microfone real e desempenho pendentes.
+**Estado:** `[~]` captura manual, endpoint Vosk/FFmpeg, transcrição editável e modo opcional de escuta contínua implementados; validação com microfone real e desempenho pendentes. Modelo configurável por `VOSK_MODEL_NAME`: o pequeno para máquinas fracas e o grande do FalaBrasil quando a qualidade importa.
 
 **Objetivo:** permitir pergunta falada pelo navegador.
 

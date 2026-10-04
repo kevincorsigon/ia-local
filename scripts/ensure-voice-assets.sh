@@ -12,7 +12,7 @@ read_env() {
   printf '%s' "${value:-$fallback}"
 }
 
-VOSK_NAME="vosk-model-small-pt-0.3"
+VOSK_NAME="$(read_env VOSK_MODEL_NAME vosk-model-small-pt-0.3)"
 VOSK_URL="https://alphacephei.com/vosk/models/$VOSK_NAME.zip"
 VOSK_DIR="$ROOT_DIR/backend/models"
 VOSK_TARGET="$VOSK_DIR/$VOSK_NAME"
@@ -74,6 +74,15 @@ if ! vosk_model_ready; then
   fi
 else
   echo "Modelo Vosk pt-BR já está instalado."
+fi
+
+# O modelo grande pt-fb traz um rescore CARPA enorme (rescore/G.carpa, 2,3 GB) que a versão atual
+# do Vosk (0.3.45) não consegue ler: "ConstArpaLm <LmStates> section reading failed". Desativando
+# só esse arquivo o modelo carrega normalmente e o reconhecimento continua correto — medido neste
+# projeto: 0,04-0,16 s por frase, contra 1,5-2,2 s do Whisper small.
+if [[ -f "$VOSK_TARGET/rescore/G.carpa" ]]; then
+  mv "$VOSK_TARGET/rescore/G.carpa" "$VOSK_TARGET/rescore/G.carpa-desativado"
+  echo "rescore CARPA desativado (incompatível com o Vosk 0.3.45; o modelo segue preciso)."
 fi
 
 echo "Modelo Vosk pronto. O Kokoro não precisa baixar nada: a imagem CPU já traz o modelo v1_0 e a voz feminina $TTS_VOICE."

@@ -136,6 +136,31 @@ problema. O mesmo conteúdo aparece em **F12 → Console**; clique em “Falar�
 Leitura rápida: `mudo=true` ou `estado=ended` no microfone, `AudioContext: suspended`, `nível 0%` contínuo ou
 `0 bytes` na captura apontam problema antes do backend; `transcrição` vazia com áudio grande aponta o Vosk.
 
+### Qualidade do reconhecimento (modelo de fala)
+
+O Vosk tem dois modelos pt-BR, e a diferença é grande em fala espontânea:
+
+| Modelo | Tamanho | Erro por palavra | Quando usar |
+| --- | --- | --- | --- |
+| `vosk-model-small-pt-0.3` | 31 MB | ~69 % | máquinas fracas (Raspberry/J5040): entende pouco de conversa livre |
+| `vosk-model-pt-fb-v0.1.1-20220516_2113` | 1,6 GB | ~54 % | recomendado para uso normal (modelo do projeto FalaBrasil, licença **GPLv3**) |
+
+Troque em `.env` e rode `./scripts/bootstrap.sh` para baixar o outro:
+
+```bash
+VOSK_MODEL_NAME=vosk-model-pt-fb-v0.1.1-20220516_2113
+```
+
+O modelo fica em `backend/models/` (fora do Git) e é carregado na primeira transcrição — com o grande,
+o consumo de RAM sobe (alguns GB) e essa primeira transcrição demora mais.
+
+### Resposta falada em trechos
+
+O Kokoro sintetiza em CPU: uma resposta inteira leva ~4 s para virar áudio, mas a primeira frase fica
+pronta em ~1,3 s. Por isso o `app.js` divide a resposta em frases, toca a primeira assim que chega e já
+sintetiza a seguinte enquanto fala — o áudio começa quase junto com o texto na tela, no mesmo tempo
+total. O botão **Parar áudio** interrompe a fila inteira.
+
 ## Testes
 
 ```bash

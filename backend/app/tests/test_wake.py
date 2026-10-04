@@ -92,6 +92,63 @@ def test_alcunhas_vem_da_configuracao() -> None:
     assert main.WAKE_PHRASES == ["kunica", "tvzinha", "televisão", "minha puta"]
 
 
+# Transcrições medidas com o Vosk grande e com o Whisper: nenhum dos dois conhece "Kunica"
+# nem "TVzinha" (não existem no dicionário), então cada um escreve uma palavra parecida.
+VARIANTES = {
+    "kunica": ["conica", "iconica", "nika"],
+    "tvzinha": ["tevzinha", "tevizinha", "teve sozinha", "oitenta vizinha", "ate vizinha"],
+}
+
+
+@pytest.mark.parametrize(
+    ("transcript", "phrase", "query"),
+    [
+        ("cônica", "kunica", ""),
+        ("cônica que horas são", "kunica", "que horas são"),
+        ("a icônica, que horas são?", "kunica", "que horas são?"),
+        ("daí conica", "kunica", ""),
+        ("com Nika", "kunica", ""),
+        ("oi, tevzinha!", "tvzinha", ""),
+        ("teve sozinha", "tvzinha", ""),
+        ("oitenta vizinha qual é a previsão", "tvzinha", "qual é a previsão"),
+        ("até vizinha", "tvzinha", ""),
+    ],
+)
+def test_variantes_medidas_acionam_a_alcunha(transcript: str, phrase: str, query: str) -> None:
+    """As formas medidas valem em qualquer posição — é o que faz o nome funcionar de fato."""
+    found = wake.match_wake_phrase(transcript, ALIASES, VARIANTES)
+
+    assert found is not None, f"não reconheceu a alcunha em {transcript!r}"
+    assert found["phrase"] == phrase
+    assert found["query"] == query
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "minha vizinha chegou agora",
+        "a vizinha do lado reclamou do barulho",
+        "a única coisa que eu quero é silêncio",
+        "a situação econômica do país melhorou",
+    ],
+)
+def test_variante_nao_aciona_com_palavra_comum(transcript: str) -> None:
+    """Palavra comum do português continua fora: só as formas inventadas viram alcunha."""
+    assert wake.match_wake_phrase(transcript, ALIASES, VARIANTES) is None
+
+
+def test_variantes_vem_da_configuracao() -> None:
+    """As formas medidas ficam no assistant.yaml, não no código."""
+    assert {"conica", "iconica"} <= set(main.WAKE_VARIANTS["kunica"])
+    assert {"tevzinha", "teve sozinha"} <= set(main.WAKE_VARIANTS["tvzinha"])
+
+    found = wake.match_wake_phrase("cônica, que horas são?", main.WAKE_PHRASES, main.WAKE_VARIANTS)
+
+    assert found is not None
+    assert found["phrase"] == "kunica"
+    assert found["query"] == "que horas são?"
+
+
 def _silence_wav() -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
@@ -102,7 +159,7 @@ def _silence_wav() -> bytes:
     return buffer.getvalue()
 
 
-@pytest.mark.skipif(not main.VOSK_MODEL_PATH.is_dir(), reason="modelo Vosk não está montado neste ambiente")
+@pytest.mark.skipif(not main.stt.model_ready(), reason="modelo de fala não está disponível neste ambiente")
 def test_transcribe_com_scan_wake_nao_confunde_silencio_com_alcunha(client) -> None:
     response = client.post(
         "/api/transcribe?scan_wake=true",
@@ -116,7 +173,7 @@ def test_transcribe_com_scan_wake_nao_confunde_silencio_com_alcunha(client) -> N
     assert payload["wake"] is None
 
 
-@pytest.mark.skipif(not main.VOSK_MODEL_PATH.is_dir(), reason="modelo Vosk não está montado neste ambiente")
+@pytest.mark.skipif(not main.stt.model_ready(), reason="modelo de fala não está disponível neste ambiente")
 def test_transcribe_sem_scan_wake_mantem_o_formato_antigo(client) -> None:
     """O botão de microfone continua recebendo só texto e confiança."""
     response = client.post(
@@ -126,4 +183,6 @@ def test_transcribe_sem_scan_wake_mantem_o_formato_antigo(client) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"text": "", "confidence": 0.0}
+    payload = response.json()
+    assert payload["text"] == ""
+    assert 0.0 <= payload["confidence"] <= 1.0

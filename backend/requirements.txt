@@ -2,4 +2,6 @@ fastapi>=0.115,<1
 httpx>=0.27,<1
 PyYAML>=6,<7
 vosk>=0.3.45,<1
+# Segundo motor de fala (opcional): bem mais preciso em português que o Vosk pequeno.
+faster-whisper>=1.1,<2
 uvicorn[standard]>=0.30,<1

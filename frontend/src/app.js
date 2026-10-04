@@ -37,6 +37,8 @@ let recordingChunks = [];
 let recordingTimeout = null;
 let currentAudio = null;
 let currentAudioUrl = null;
+// Trechos de fala em andamento (null = nada tocando): permite "Parar áudio" encerrar tudo.
+let speechQueue = null;
 let wakeRecorder = null;
 let wakeStream = null;
 let wakeEnabled = false;
@@ -574,6 +576,7 @@ async function checkHealth() {
 }
 
 function finishPlayback() {
+  speechQueue = null;
   currentAudio = null;
   if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
   currentAudioUrl = null;
@@ -583,54 +586,107 @@ function finishPlayback() {
   showReadyState();
 }
 
+// Divide a resposta em trechos faláveis (frases). Sintetizar o primeiro trecho leva ~1,3 s
+// enquanto o texto inteiro levaria ~4 s — a fala começa bem antes, no mesmo total.
+function splitForSpeech(text, maxChars = 220) {
+  const partes = text
+    .split(/(?<=[.!?…])\s+|\n+/)
+    .map((parte) => parte.trim())
+    .filter(Boolean);
+  const chunks = [];
+  let atual = "";
+  for (const parte of partes) {
+    if (atual && atual.length + parte.length + 1 > maxChars) {
+      chunks.push(atual);
+      atual = parte;
+    } else {
+      atual = atual ? `${atual} ${parte}` : parte;
+    }
+  }
+  if (atual) chunks.push(atual);
+  return chunks.length ? chunks : [text];
+}
+
+async function synthesize(text) {
+  const response = await fetch("/api/speak", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) throw new Error(`síntese indisponível (HTTP ${response.status})`);
+  return response.blob();
+}
+
 async function speakAnswer(text) {
+  const startedAt = performance.now();
   try {
     if (currentAudio) {
       currentAudio.pause();
       finishPlayback();
     }
-    const response = await fetch("/api/speak", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    if (!response.ok) {
-      logWarn("síntese de voz indisponível:", response.status);
-      return;
-    }
-    const audioBlob = await response.blob();
-    log("áudio de voz:", audioBlob.size, "bytes");
-    if (!audioBlob.size) return;
-    currentAudioUrl = URL.createObjectURL(audioBlob);
-    currentAudio = new Audio(currentAudioUrl);
-    currentAudio.addEventListener("ended", finishPlayback, { once: true });
-    currentAudio.addEventListener("error", finishPlayback, { once: true });
+    const chunks = splitForSpeech(text);
+    speechQueue = chunks;
     stopSpeakingButton.textContent = "Parar áudio";
     stopSpeakingButton.hidden = false;
     setState("speaking", "Estou falando…");
-    await currentAudio.play();
-  } catch {
+    log(`voz: ${chunks.length} trecho(s) para sintetizar`);
+
+    // Já começa a sintetizar o primeiro trecho, e adianta o próximo enquanto fala.
+    let proximo = synthesize(chunks[0]);
+    for (let indice = 0; indice < chunks.length; indice += 1) {
+      const audioBlob = await proximo;
+      if (!speechQueue) return; // o usuário parou
+      if (indice + 1 < chunks.length) proximo = synthesize(chunks[indice + 1]);
+      if (!audioBlob.size) continue;
+      if (indice === 0) {
+        log(`voz: primeiro áudio pronto em ${Math.round(performance.now() - startedAt)} ms`);
+      }
+      currentAudioUrl = URL.createObjectURL(audioBlob);
+      currentAudio = new Audio(currentAudioUrl);
+      setState("speaking", "Estou falando…");
+      await new Promise((resolve, reject) => {
+        currentAudio.addEventListener("ended", resolve, { once: true });
+        currentAudio.addEventListener("error", reject, { once: true });
+        currentAudio.play().catch(reject);
+      });
+      if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
+      currentAudioUrl = null;
+      currentAudio = null;
+      if (!speechQueue) return;
+    }
+    finishPlayback();
+  } catch (error) {
+    logWarn("falha na síntese de voz:", error);
     if (currentAudio) {
+      // Mantém o trecho que já existe para tocar no botão (ex.: o navegador bloqueou o autoplay).
+      speechQueue = null;
       stopSpeakingButton.textContent = "Tocar resposta";
       stopSpeakingButton.hidden = false;
       setState("idle", "A resposta está pronta para tocar.");
+    } else {
+      finishPlayback();
     }
   }
 }
 
 stopSpeakingButton.addEventListener("click", async () => {
-  if (!currentAudio) return;
-  if (currentAudio.paused) {
-    try {
-      await currentAudio.play();
-      stopSpeakingButton.textContent = "Parar áudio";
-      setState("speaking", "Estou falando…");
-    } catch {
-      finishPlayback();
+  // Enquanto a resposta está sendo falada, o botão encerra a fila inteira.
+  if (speechQueue) {
+    log("voz interrompida pelo usuário");
+    speechQueue = null;
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
     }
-  } else {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
+    finishPlayback();
+    return;
+  }
+  if (!currentAudio) return;
+  try {
+    await currentAudio.play();
+    stopSpeakingButton.textContent = "Parar áudio";
+    setState("speaking", "Estou falando…");
+  } catch {
     finishPlayback();
   }
 });

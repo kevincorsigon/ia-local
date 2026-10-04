@@ -6,7 +6,15 @@ services:
     profiles: [core]
     environment:
       ASSISTANT_CONFIG: /app/config/assistant.yaml
-      VOSK_MODEL_PATH: /models/vosk-model-small-pt-0.3
+      VOSK_MODEL_PATH: /models/${VOSK_MODEL_NAME:-vosk-model-small-pt-0.3}
+      # Motor de fala: 'whisper' entende bem mais em português; 'vosk' é leve e offline.
+      STT_ENGINE: ${STT_ENGINE:-whisper}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      # 0 = usa todos os núcleos da máquina.
+      WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-0}
+      # O modelo do Whisper fica no volume persistente (baixa uma única vez).
+      WHISPER_CACHE_DIR: /data/whisper
       TTS_URL: http://kokoro:8880
       TTS_VOICE: ${TTS_VOICE:-pf_dora}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}

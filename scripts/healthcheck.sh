@@ -81,6 +81,17 @@ case "$HEALTH_JSON" in
   *) fail "health não retornou status ok." ;;
 esac
 
+step "Motor de fala (campo 'speech' do /health)"
+case "$HEALTH_JSON" in
+  *'"speech"'*'"available":true'*)
+    ok "motor de fala pronto: $(printf '%s' "$HEALTH_JSON" | sed -n 's/.*"speech":\({\?[^}]*}\).*/\1/p')"
+    ;;
+  *'"speech"'*)
+    fail "o motor de fala ainda não está pronto (rode ./scripts/bootstrap.sh; o Whisper baixa o modelo na primeira vez)."
+    ;;
+  *) fail "o /health não informou o motor de fala." ;;
+esac
+
 step "GET /api/config/public"
 CONFIG_JSON="$(curl --silent --show-error --max-time 15 "$BASE_URL/api/config/public")"
 echo "   $CONFIG_JSON"
@@ -165,7 +176,7 @@ else
   ok "WAV pt-BR gerado com $WAV_BYTES bytes."
 fi
 
-step "POST /api/transcribe — reconhecimento de voz (Vosk) sobre o áudio do Kokoro"
+step "POST /api/transcribe — reconhecimento de voz sobre o áudio do Kokoro"
 TRANSCRIBE_JSON="$(curl --silent --show-error --max-time 180 -H 'Content-Type: audio/wav' \
   --data-binary "@$WAV_FILE" "$BASE_URL/api/transcribe")"
 TRANSCRIBE_STATUS=$?
@@ -176,7 +187,7 @@ if [[ "$TRANSCRIBE_STATUS" -ne 0 ]]; then
 else
   TEXT="$(json_field "$TRANSCRIBE_JSON" text)"
   if [[ -n "$TEXT" ]]; then
-    ok "Vosk transcreveu: $TEXT"
+    ok "motor de fala transcreveu: $TEXT"
   else
     fail "transcrição vazia."
   fi

@@ -7,6 +7,22 @@ assistant:
     - tvzinha
     - televisão
     - minha puta
+  # Formas que os motores de fala escrevem no lugar das alcunhas — medidas neste projeto com o
+  # Vosk grande, o Vosk pequeno e o Whisper. "Kunica" e "TVzinha" não existem no dicionário de
+  # nenhum deles, então cada motor escreve uma palavra parecida. Entram aqui só formas que NÃO
+  # são palavras comuns do português: é isso que faz a alcunha acionar sem transformar "a única
+  # coisa" ou "minha vizinha" em disparo por engano.
+  wake_variants:
+    kunica:
+      - conica          # Vosk grande: "Kunica" -> "cônica"
+      - iconica         # Vosk grande: "Ei Kunica" -> "a icônica"
+      - nika            # Whisper: "Kunica" -> "com Nika."
+    tvzinha:
+      - tevzinha        # Whisper: "Oi TVzinha" -> "Oi, tevzinha!"
+      - tevizinha
+      - teve sozinha    # Vosk grande: "TVzinha" -> "teve sozinha"
+      - oitenta vizinha # Vosk grande: "Oi TVzinha" -> "oitenta vizinha"
+      - ate vizinha     # Whisper: "TVzinha" -> "Até vizinha!"
   follow_up_seconds: 8
   # Depois de uma resposta por voz, a conversa segue ativa por este tempo: falar já envia a
   # mensagem, sem repetir a alcunha. Passado o tempo sem fala, volta a exigir a alcunha.

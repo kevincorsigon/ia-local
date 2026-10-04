@@ -1,5 +1,6 @@
 import os
 import re
+import unicodedata
 from datetime import date
 from typing import Any
 
@@ -70,12 +71,47 @@ def extract_memory_text(message: str) -> str:
     return re.sub(r"\s+", " ", text).strip(" .,;:-")
 
 
+# Palavras de tempo que costumam vir coladas ao nome da cidade ("São Paulo hoje",
+# "para hoje em São Paulo", "no fim de semana") e não fazem parte do nome.
+_TIME_HINTS = (
+    r"(?:"
+    r"(?:hoje|amanh[ãa]|ontem)(?:\s+(?:de|à|pela|a)\s+(?:manh[ãa]|tarde|noite))?"
+    r"|depois de amanh[ãa]"
+    r"|agora"
+    r"|(?:de|à|pela|a|esta|essa|nesta)\s+(?:manh[ãa]|tarde|noite)"
+    r"|(?:esta|essa|nesta|na|de)\s+semana"
+    r"|semana que vem"
+    r"|(?:(?:no|de)\s+)?(?:fim|final)\s+de\s+semana"
+    r")"
+)
+_LOCATION_LEADING_TIME = re.compile(rf"^(?:{_TIME_HINTS}|semana)\s+(?:em|no|na|de|para|pra)\s+", re.IGNORECASE)
+_LOCATION_TRAILING_TIME = re.compile(rf"[\s,]+(?:(?:em|no|na|de|para|pra)\s+)?{_TIME_HINTS}\s*$", re.IGNORECASE)
+
+
+def _clean_location(raw: str) -> str:
+    """Tira as palavras de tempo que vieram junto do nome da cidade.
+
+    Medido com o modelo em uso: “Qual é a previsão do tempo para hoje em São Paulo?” chegava
+    inteiro (“hoje em São Paulo”) à API de geocodificação e a consulta falhava.
+    """
+    location = raw.strip(" .,;:-")
+    location = _LOCATION_LEADING_TIME.sub("", location)
+    location = _LOCATION_TRAILING_TIME.sub("", location)
+    return location.strip(" .,;:-")
+
+
+def _fold_name(text: str) -> str:
+    """Compara nomes ignorando acentos e maiúsculas (“são paulo” == “Sao Paulo”)."""
+    decomposed = unicodedata.normalize("NFD", text.casefold())
+    return "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
+
+
 def _extract_location(message: str) -> str | None:
-    match = re.search(r"\b(?:em|para|pra|de)\s+(.+?)(?:[?.!,]|$)", message, re.IGNORECASE)
-    if not match:
-        return None
-    location = re.sub(r"\s+(?:essa|esta|nesta) semana$", "", match.group(1), flags=re.IGNORECASE)
-    return location.strip()
+    for candidate in re.findall(r"\b(?:em|para|pra|de)\s+([^?.!,]+)", message, re.IGNORECASE):
+        location = _clean_location(candidate)
+        if location:
+            return location
+    return None
 
 
 async def weather_tool(message: str) -> dict[str, Any]:
@@ -99,7 +135,20 @@ async def weather_tool(message: str) -> dict[str, Any]:
 
         unique = {(item.get("name"), item.get("admin1"), item.get("latitude"), item.get("longitude")): item for item in matches}
         matches = list(unique.values())
-        if len(matches) > 1:
+        wanted = _fold_name(location)
+        exatos = sorted(
+            (item for item in matches if _fold_name(str(item.get("name", ""))) == wanted),
+            key=lambda item: item.get("population") or 0,
+            reverse=True,
+        )
+        # "São Paulo" e "Curitiba" voltam junto com nomes parecidos e com homônimos pequenos
+        # ("Frei Paulo", "São Paulo, Alagoas"). Quando o nome bate exatamente e existe uma cidade
+        # claramente maior, ela é a resposta — perguntar aqui só atrapalha.
+        if len(exatos) == 1 or (
+            len(exatos) > 1 and (exatos[0].get("population") or 0) > (exatos[1].get("population") or 0)
+        ):
+            matches = exatos[:1]
+        elif len(matches) > 1:
             options = "; ".join(
                 f"{item.get('name')}, {item.get('admin1', 'estado não informado')}" for item in matches[:5]
             )

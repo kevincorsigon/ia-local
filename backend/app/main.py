@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import json
 import time
 import uuid
 from pathlib import Path
@@ -13,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
-from app import memory, wake
+from app import memory, stt, wake
 from app.tools import ToolUnavailable, extract_memory_text, route_question, weather_tool, web_search_tool
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
@@ -29,7 +28,6 @@ CHAT_TIMEOUT_SECONDS = float(os.getenv("CHAT_TIMEOUT_SECONDS", "180"))
 MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "4000"))
 MAX_RESPONSE_TOKENS = int(os.getenv("MAX_RESPONSE_TOKENS", "400"))
 ASSISTANT_CONFIG = os.getenv("ASSISTANT_CONFIG", "/app/config/assistant.yaml")
-VOSK_MODEL_PATH = Path(os.getenv("VOSK_MODEL_PATH", "/models/vosk-model-small-pt-0.3"))
 TTS_URL = os.getenv("TTS_URL", "http://kokoro:8880").rstrip("/")
 TTS_VOICE = os.getenv("TTS_VOICE", "pf_dora")
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
@@ -50,9 +48,12 @@ MAX_HISTORY_TURNS = max(0, int(ASSISTANT_SETTINGS.get("max_history_turns", 8)))
 SESSION_TTL_SECONDS = max(60, int(ASSISTANT_SETTINGS.get("session_ttl_minutes", 30)) * 60)
 SESSIONS: dict[str, dict[str, Any]] = {}
 WAKE_PHRASES = [str(item) for item in (ASSISTANT_SETTINGS.get("wake_phrases") or [])]
-VOSK_MODEL: Any | None = None
-VOSK_MODEL_LOCK = asyncio.Lock()
-VOSK_RECOGNITION_LOCK = asyncio.Lock()
+# Formas medidas em que cada motor de fala escreve a alcunha (ver config/assistant.yaml).
+WAKE_VARIANTS = {
+    wake.normalize(str(alias)): [str(item) for item in (forms or [])]
+    for alias, forms in (ASSISTANT_SETTINGS.get("wake_variants") or {}).items()
+}
+STT_RECOGNITION_LOCK = asyncio.Lock()
 
 app = FastAPI(title="Assistente local", version="0.1.0")
 logger = logging.getLogger("assistant")
@@ -147,7 +148,25 @@ async def health() -> dict[str, Any]:
         "model": OLLAMA_MODEL,
         "model_available": model_present,
         "memory": memory_state,
+        "speech": stt.describe(),
     }
+
+
+@app.post("/api/warmup")
+async def warmup() -> dict[str, Any]:
+    """Prepara o motor de fala em segundo plano (o Whisper baixa o modelo na primeira vez)."""
+    ready = stt.available()
+
+    async def prepare() -> None:
+        try:
+            await asyncio.to_thread(stt.warmup)
+            logger.info("motor de fala pronto (%s)", stt.engine())
+        except Exception:  # noqa: BLE001 - o aquecimento não pode derrubar o serviço
+            logger.warning("não consegui preparar o motor de fala", exc_info=True)
+
+    if not ready:
+        asyncio.create_task(prepare())
+    return {"engine": stt.engine(), "started": not ready, "speech": stt.describe()}
 
 
 @app.get("/api/config/public")
@@ -376,23 +395,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
     )
 
 
-async def get_vosk_model() -> Any:
-    global VOSK_MODEL
-    if VOSK_MODEL is not None:
-        return VOSK_MODEL
-    async with VOSK_MODEL_LOCK:
-        if VOSK_MODEL is not None:
-            return VOSK_MODEL
-        if not VOSK_MODEL_PATH.is_dir():
-            raise HTTPException(status_code=503, detail="Modelo Vosk pt-BR ausente. Rode ./scripts/bootstrap.sh para instalar os recursos de voz.")
-        try:
-            from vosk import Model
-
-            VOSK_MODEL = await asyncio.to_thread(Model, str(VOSK_MODEL_PATH))
-        except (ImportError, RuntimeError, OSError) as exc:
-            logger.warning("Could not load Vosk model")
-            raise HTTPException(status_code=503, detail="Não consegui carregar o modelo local de reconhecimento de fala.") from exc
-    return VOSK_MODEL
+async def get_speech_ready() -> None:
+    """Garante que o motor de fala responde antes de aceitar áudio."""
+    if stt.available():
+        return
+    raise HTTPException(
+        status_code=503,
+        detail="O reconhecimento de fala ainda não está pronto. Rode ./scripts/bootstrap.sh para instalar os recursos de voz.",
+    )
 
 
 @app.post("/api/transcribe")
@@ -430,34 +440,24 @@ async def transcribe(request: Request, scan_wake: bool = False) -> dict[str, Any
     if process.returncode != 0 or not pcm:
         raise HTTPException(status_code=415, detail="Formato de áudio não suportado. Grave novamente pelo navegador.")
 
-    model = await get_vosk_model()
+    await get_speech_ready()
     try:
-        def recognize() -> tuple[str, float]:
-            from vosk import KaldiRecognizer
-
-            recognizer = KaldiRecognizer(model, 16000)
-            recognizer.SetWords(True)
-            for offset in range(0, len(pcm), 4000):
-                recognizer.AcceptWaveform(pcm[offset:offset + 4000])
-            result = json.loads(recognizer.FinalResult())
-            words = result.get("result", [])
-            confidence = sum(float(word.get("conf", 0)) for word in words) / len(words) if words else 0.0
-            return str(result.get("text", "")).strip(), confidence
-
-        # Serialize recognition jobs: the target CPU has few cores and the
-        # wake mode may submit clips repeatedly while another client is active.
-        async with VOSK_RECOGNITION_LOCK:
-            text, confidence = await asyncio.to_thread(recognize)
+        # Serializa o reconhecimento: a CPU alvo tem poucos núcleos e o modo de escuta
+        # contínua pode enviar áudios seguidos enquanto outro cliente fala.
+        async with STT_RECOGNITION_LOCK:
+            text, confidence = await asyncio.to_thread(stt.transcribe_pcm, pcm)
+    except stt.ModelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (ValueError, RuntimeError, OSError) as exc:
         logger.warning("Speech transcription failed")
         raise HTTPException(status_code=502, detail="Não consegui reconhecer essa fala. Tente novamente.") from exc
 
     response: dict[str, Any] = {"text": text, "confidence": round(confidence, 3)}
     if scan_wake:
-        # O modelo pt-BR pequeno não conhece as alcunhas ("Kunica" vira "única" e
-        # "TVzinha" vira "vizinha"), por isso a comparação é tolerante às trocas que
-        # ele faz — mas continua recusando palavras parecidas no meio da frase.
-        response["wake"] = wake.match_wake_phrase(text, WAKE_PHRASES)
+        # O motor de fala não conhece as alcunhas ("Kunica" vira "cônica", "TVzinha" vira
+        # "teve sozinha"), então a comparação usa as formas medidas em wake_variants e, na
+        # primeira palavra, também semelhança — mas continua recusando palavra comum solta.
+        response["wake"] = wake.match_wake_phrase(text, WAKE_PHRASES, WAKE_VARIANTS)
     return response
 
 
