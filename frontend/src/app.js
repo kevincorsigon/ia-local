@@ -968,6 +968,13 @@ if (fullscreenToggle) {
   }
 }
 
+input.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+  event.preventDefault();
+  if (form.requestSubmit) form.requestSubmit();
+  else void sendMessage(input.value);
+});
+
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 140)}px`;

@@ -119,8 +119,9 @@ fi
 
 section "Velocidade de geração do Ollama (chamada direta)"
 PROMPT="Explique em uma frase o que é fotossíntese."
+# think=false: sem isso o Gemma 4 gasta o num_predict no raciocínio e devolve vazio.
 GENERATE_JSON="$(curl --silent --max-time 600 -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"$PROMPT\",\"stream\":false,\"options\":{\"num_predict\":$MAX_RESPONSE_TOKENS}}" \
+  -d "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"$PROMPT\",\"stream\":false,\"think\":false,\"options\":{\"num_predict\":$MAX_RESPONSE_TOKENS}}" \
   "$OLLAMA_HOST_URL/api/generate")"
 EVAL_COUNT="$(json_number "$GENERATE_JSON" eval_count)"
 EVAL_DURATION="$(json_number "$GENERATE_JSON" eval_duration)"

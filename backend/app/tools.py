@@ -117,6 +117,10 @@ _MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
 _MD_BULLET = re.compile(r"^(\s*)[*•+]\s+", re.MULTILINE)
 _MD_EMPHASIS = re.compile(r"(\*{1,3})(\S(?:[^\n]*?\S)?)\1")
 _MD_STRAY_MARK = re.compile(r"\*+")
+# Blocos de raciocínio (<think>...</think>) que Gemma 4 / Qwen3 embutem no content
+# quando o thinking está ligado: o usuário (e o TTS) só devem receber a resposta final.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
 # Emojis que o modelo espalha nas respostas: pictogramas, símbolos, dingbats e bandeiras.
 # Setas comuns (→) ficam de fora de propósito — não são emoji e tirá-las poderia juntar palavras.
 _EMOJI = re.compile(
@@ -137,7 +141,9 @@ def to_plain_text(text: str) -> str:
 
     “*   **Clima:** 🙂 item” vira “- Clima: item”.
     """
-    plain = _MD_CODE.sub(r"\1", text)
+    plain = _THINK_BLOCK_RE.sub("", text)
+    plain = _THINK_TAG_RE.sub("", plain)
+    plain = _MD_CODE.sub(r"\1", plain)
     plain = _MD_HEADING.sub("", plain)
     plain = _MD_BULLET.sub(r"\1- ", plain)
     plain = _MD_EMPHASIS.sub(r"\2", plain)

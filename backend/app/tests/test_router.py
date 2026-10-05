@@ -411,6 +411,9 @@ def test_extrai_conteudo_a_guardar(message: str, expected: str) -> None:
         ("✅ **Pronto**", "Pronto"),
         # Setas não são emoji: ficam como estão.
         ("SP → RJ", "SP → RJ"),
+        # Bloco de raciocínio (<think>) sai: usuário e TTS recebem só a resposta.
+        ("<think>raciocínio longo</think>Fotossíntese converte luz em energia.", "Fotossíntese converte luz em energia."),
+        ("<think>rascunho</think>", ""),
     ],
 )
 def test_resposta_do_modelo_vira_texto_simples(entrada: str, esperado: str) -> None:

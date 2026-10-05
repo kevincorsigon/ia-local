@@ -114,6 +114,26 @@ def test_chat_geral_usa_so_o_modelo_local(client, external) -> None:
     assert enviado["messages"][0]["role"] == "system"
     assert main.ASSISTANT_NAME in enviado["messages"][0]["content"]
     assert enviado["options"]["num_predict"] == main.MAX_RESPONSE_TOKENS
+    # Thinking desligado por padrão: sem think=false o Gemma 4 gasta o orçamento
+    # no raciocínio e devolve content vazio (foi o HC reprovado com 400 e 1200).
+    assert enviado["think"] is False
+
+
+def test_chat_desliga_thinking_e_reaproveita_thinking_vazio(client, external) -> None:
+    """Gemma 4 com thinking ligado: content vazio + thinking usa o thinking."""
+
+    def thinking_reply(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "", "thinking": "Canberra."}}
+        )
+
+    calls = external({CHAT_ROUTE: thinking_reply})
+
+    response = client.post("/api/chat", json={"message": "Qual é a capital da Austrália?"})
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Canberra."
+    assert calls.payloads(CHAT_ROUTE)[0]["think"] is False
 
 
 def test_chat_mantem_contexto_e_isola_sessoes(client, external) -> None:

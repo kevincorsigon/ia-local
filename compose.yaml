@@ -29,6 +29,9 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # Desliga o thinking (Gemma 4, Qwen3...) por padrão: sem think=false o
+      # raciocínio consome o num_predict e o content volta vazio.
+      OLLAMA_THINK: ${OLLAMA_THINK:-false}
       # Preenchida pelo bootstrap (scripts/ensure-ollama.sh): a outra instância, usada
       # como reserva quando a principal não responde.
       OLLAMA_FALLBACK_URL: ${OLLAMA_FALLBACK_URL:-}

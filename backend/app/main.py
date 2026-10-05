@@ -33,6 +33,16 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 # Segunda tentativa quando o Ollama configurado não responde. Cobre o caso de o
 # container subir sem passar pelo bootstrap, que é quem escolhe Windows ou WSL.
 OLLAMA_FALLBACK_URL = os.getenv("OLLAMA_FALLBACK_URL", "").strip().rstrip("/")
+# Modelos com raciocínio (Gemma 4, Qwen3, DeepSeek-R1...) ligam o thinking por padrão
+# e contam esses tokens dentro do mesmo ``num_predict`` da resposta. Sem
+# ``think=false`` o raciocínio come o orçamento (400 ou 1200) e sobra ``content``
+# vazio — por isso aumentar MAX_RESPONSE_TOKENS não fez o HC passar. Desligado por
+# padrão porque o assistente responde em 1-2 frases; ligue com OLLAMA_THINK=true
+# para depurar o raciocínio.
+_OLLAMA_THINK_RAW = os.getenv("OLLAMA_THINK", "false").strip().lower()
+OLLAMA_THINK: Any = False
+if _OLLAMA_THINK_RAW in {"1", "true", "yes", "on", "low", "medium", "high", "max"}:
+    OLLAMA_THINK = True if _OLLAMA_THINK_RAW in {"1", "true", "yes", "on"} else _OLLAMA_THINK_RAW
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Kunica")
 CHAT_TIMEOUT_SECONDS = float(os.getenv("CHAT_TIMEOUT_SECONDS", "180"))
 MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "4000"))
@@ -433,6 +443,27 @@ async def delete_all_memories() -> dict[str, int]:
     return {"removed": removed}
 
 
+def extract_answer_text(data: dict[str, Any]) -> str:
+    """Extrai a resposta final do Ollama mesmo com thinking ligado.
+
+    Gemma 4 / Qwen3 / DeepSeek devolvem o raciocínio em ``message.thinking`` (ou
+    embutido em ``<think>`` no content) e deixam ``content`` vazio quando o
+    orçamento de ``num_predict`` acaba no meio do raciocínio. Usa o content; se
+    vier vazio, reaproveita o thinking como último recurso em vez de falhar com
+    "resposta vazia" (que é o que derrubava o HC com gemma4:12b).
+    """
+    message = data.get("message", {}) or {}
+    raw = str(message.get("content", "") or "")
+    thinking = str(message.get("thinking", "") or "")
+    answer = to_plain_text(raw)
+    if not answer and thinking.strip():
+        # to_plain_text removeu só tags <think>, ou o content veio vazio:
+        # tenta o campo thinking dedicado.
+        answer = to_plain_text(thinking)
+    return answer
+
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     message = request.message.strip()
@@ -526,6 +557,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
     payload: dict[str, Any] = {
         "model": OLLAMA_MODEL,
         "keep_alive": OLLAMA_KEEP_ALIVE,
+        # Desliga o raciocínio por padrão (ver OLLAMA_THINK acima): sem isso o
+        # thinking consome o num_predict e o content volta vazio no Gemma 4.
+        "think": OLLAMA_THINK,
         "stream": False,
         "messages": [
             {"role": "system", "content": await system_prompt()},
@@ -571,7 +605,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             detail="Não consegui acessar o Ollama no host. Verifique se está ativo e acessível pelo Docker.",
         ) from exc
 
-    answer = to_plain_text(str(data.get("message", {}).get("content", "")))
+    answer = extract_answer_text(data)
     if not answer:
         raise HTTPException(status_code=502, detail="O modelo retornou uma resposta vazia.")
     append_turn(session, history, message, answer)
