@@ -75,13 +75,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME.service" >/dev/null
 
 # 3. Autostart gráfico: abre o navegador quando a interface responder.
+# Preserva qual .env foi usado na instalação (ex.: .env.nuc), senão o
+# open-frontend.sh leria sempre o .env padrão e ignoraria o ASSISTANT_KIOSK.
 mkdir -p "$AUTOSTART_DIR"
 cat > "$DESKTOP_FILE" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Assistente local (console)
 Comment=Abre o navegador na interface da assistente
-Exec=${ROOT_DIR}/scripts/open-frontend.sh
+Exec=env ASSISTANT_ENV_FILE=${ENV_FILE} ${ROOT_DIR}/scripts/open-frontend.sh
 Terminal=false
 X-GNOME-Autostart-enabled=true
 DESKTOP

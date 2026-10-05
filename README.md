@@ -468,10 +468,11 @@ Dois ajustes que só se fazem uma vez:
   ele depende da sessão gráfica.
 - O usuário precisa estar no grupo **`docker`**: `sudo usermod -aG docker $USER` e saia/entre na
   sessão. O instalador avisa se faltar.
-
-Para abrir em tela cheia de verdade, troque a linha final do `scripts/open-frontend.sh` por
-`exec chromium-browser --kiosk "$URL"` (ou use o botão de tela cheia do próprio console — o gráfico
-de barras no canto superior esquerdo).
+- **Tela cheia no boot (quiosque):** ponha `ASSISTANT_KIOSK=1` no `.env` (ou `.env.nuc`) e rode o
+  `install-autostart.sh` de novo — o `open-frontend.sh` passa a abrir o Chromium/Chrome com
+  `--kiosk`, sem bordas nem barra de endereço. Exige Chromium/Chrome instalado (`sudo apt install -y
+  chromium-browser`); sem ele, abre no navegador padrão em janela normal. Para sair do quiosque, `Alt+F4`.
+  O console também tem o botão próprio de tela cheia (o gráfico de barras no canto superior esquerdo).
 
 Para desfazer:
 
