@@ -80,11 +80,22 @@ echo "Construindo as imagens..."
 "${COMPOSE[@]}" --profile core --profile voice build
 
 echo "Validando a rota container -> Ollama do host ($OLLAMA_BASE_URL)..."
-if ! "${COMPOSE[@]}" --profile core run --rm --no-deps -T backend \
-  python -c "import os,urllib.request; urllib.request.urlopen(os.environ['OLLAMA_BASE_URL'].rstrip('/') + '/api/tags', timeout=5)" >/dev/null 2>&1; then
+# Guarda a saída da tentativa: sem ela, ">/dev/null 2>&1" esconde a causa real (recusado,
+# estourado, nome não resolvido) e sobra uma mensagem genérica que não orienta o conserto.
+if ! ROUTE_OUT="$("${COMPOSE[@]}" --profile core run --rm --no-deps -T backend \
+  python -c "import os,urllib.request; print(urllib.request.urlopen(os.environ['OLLAMA_BASE_URL'].rstrip('/') + '/api/tags', timeout=5).status)" 2>&1)"; then
   echo "Os containers não alcançaram o Ollama em $OLLAMA_BASE_URL." >&2
-  echo "O Ollama precisa escutar numa interface alcançável pela rede Docker (OLLAMA_SERVE_HOST)," >&2
-  echo "e a porta 11434 não pode estar bloqueada por firewall." >&2
+  echo "Detalhe:" >&2
+  printf '%s\n' "$ROUTE_OUT" | tail -n 4 | sed 's/^/    /' >&2 || true
+  echo "" >&2
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ollama 2>/dev/null; then
+    echo "O serviço 'ollama' está ativo: quase certo que ele escuta só em 127.0.0.1 e a rede" >&2
+    echo "Docker não alcança. Aplique o drop-in da seção 'Problemas comuns' do README" >&2
+    echo "(OLLAMA_HOST=0.0.0.0:11434) e rode ./scripts/bootstrap.sh de novo." >&2
+  else
+    echo "O Ollama precisa estar ativo e escutando numa interface alcançável pela rede Docker," >&2
+    echo "e a porta 11434 não pode estar bloqueada por firewall." >&2
+  fi
   exit 1
 fi
 echo "Rota container -> host confirmada."

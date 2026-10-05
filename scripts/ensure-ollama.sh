@@ -84,6 +84,44 @@ pull_model_via_api() {
   return 0
 }
 
+# O host responder em 127.0.0.1 não implica que os containers alcancem: uma escuta em loopback
+# devolve "Connection refused" para a rede Docker e o bootstrap falha linhas depois, sem apontar a
+# causa. host.docker.internal aponta para o gateway da bridge, então só um bind wildcard
+# (0.0.0.0 / ::) resolve — escutar num IP específico da LAN também não é alcançável por lá.
+assert_bind_reachable_from_docker() {
+  command -v ss >/dev/null 2>&1 || return 0
+  local addrs addr
+  addrs="$(ss -tln 2>/dev/null \
+    | awk -v p=":${OLLAMA_PREFER_PORT}" \
+        '$1 == "LISTEN" && index($4, p) == length($4) - length(p) + 1 {
+           a = $4; sub(/:[0-9]+$/, "", a); gsub(/[\[\]]/, "", a); print a
+         }' \
+    | sort -u)"
+  # Sem listener identificado não há o que avaliar: quem acusa é o teste do bootstrap.
+  [[ -n "$addrs" ]] || return 0
+  while read -r addr; do
+    case "$addr" in
+      0.0.0.0|::) return 0 ;;
+    esac
+  done <<<"$addrs"
+  {
+    echo "O Ollama responde no host, mas não escuta em nenhuma interface alcançável pela rede Docker"
+    echo "(encontrado: $(tr '\n' ' ' <<<"$addrs") no ${OLLAMA_PREFER_PORT}/tcp). Os containers levam"
+    echo "'Connection refused' em host.docker.internal. Para o serviço systemd escutar em 0.0.0.0:"
+    echo
+    echo "  sudo mkdir -p /etc/systemd/system/ollama.service.d"
+    echo "  sudo tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null <<'EOF'"
+    echo "  [Service]"
+    echo "  Environment=\"OLLAMA_HOST=0.0.0.0:${OLLAMA_PREFER_PORT}\""
+    echo "  EOF"
+    echo "  sudo systemctl daemon-reload && sudo systemctl restart ollama"
+    echo "  ss -tlnp | grep ${OLLAMA_PREFER_PORT}   # precisa mostrar 0.0.0.0:${OLLAMA_PREFER_PORT}"
+    echo
+    echo "Depois rode ./scripts/bootstrap.sh de novo."
+  } >&2
+  return 1
+}
+
 write_state() {
   local mode="$1" host_url="$2" base_url="$3" fallback_url="${4:-}"
   mkdir -p "$(dirname "$STATE_FILE")"
@@ -239,10 +277,19 @@ if [[ -z "$MODE" ]]; then
     fi
   fi
 
+  # O host respondendo não basta: se a escuta for só em loopback, os containers levam
+  # "Connection refused" e o bootstrap falha depois apontando para o sintoma, não para a causa.
+  assert_bind_reachable_from_docker || exit 1
+
   MODE="wsl"
   HOST_URL="$OLLAMA_HOST_URL"
   BASE_URL="http://host.docker.internal:${OLLAMA_PREFER_PORT}"
-  FALLBACK_URL="${WINDOWS_IP:+$WINDOWS_URL}"
+  # O fallback só vale quando existe um segundo Ollama de verdade. Com OLLAMA_PREFER_WINDOWS=0 o
+  # usuário pediu para ignorar o Windows, mas windows_host_ip() devolve o gateway padrão numa
+  # máquina sem Windows — a reserva acabaria apontando para o roteador em toda tentativa de chat.
+  if [[ "$OLLAMA_PREFER_WINDOWS" == "1" ]]; then
+    FALLBACK_URL="${WINDOWS_IP:+$WINDOWS_URL}"
+  fi
   if ! has_model "$OLLAMA_HOST_URL"; then
     if command -v ollama >/dev/null 2>&1; then
       echo "Baixando modelo $OLLAMA_MODEL (pode levar vários minutos)..."

@@ -340,6 +340,96 @@ quebrando o script. O `bootstrap.sh` normaliza sozinho; confira com `grep -c $'\
 LAN, troque no `compose.yaml` a porta por `"${WEB_PORT:-8080}:8080"` — sem autenticação, mantenha na
 rede local — ou use um túnel SSH (`ssh -L 8080:localhost:8080 usuario@nuc`).
 
+## Espaço em disco no NUC
+
+O build das imagens, o Kokoro (~1,5 GB) e os modelos de fala pedem alguns GB. O `bootstrap.sh` avisa
+antes de começar quando falta espaço; se o build já falhou com `No space left on device`, comece pelo
+diagnóstico:
+
+```bash
+df -h
+sudo docker info | grep -i "root dir"    # onde o Docker guarda de verdade
+sudo du -xh --max-depth=1 /var 2>/dev/null | sort -h | tail
+sudo du -xh --max-depth=1 /home 2>/dev/null | sort -h | tail
+sudo du -sh /usr/share/ollama/.ollama
+du -sh ~/.ollama ~/ia-local/data ~/.cache 2>/dev/null
+docker system df
+journalctl --disk-usage
+```
+
+Duas armadilhas de leitura: o `SIZE` do `docker system df` soma as camadas e conta as compartilhadas
+mais de uma vez, então é maior que o `du` do diretório — use o `root dir` acima para achar o caminho
+real antes de concluir qualquer coisa. E se existir `~/.ollama` junto com
+`/usr/share/ollama/.ollama`, você tem **dois stores**: o do serviço (`ollama.service`) e uma cópia
+órfã de um `ollama serve`/`ollama pull` rodado como usuário comum. Confira com `ollama list` (que fala
+com a API, portanto mostra o store do serviço) antes de apagar o da sua home.
+
+Em seguida, do mais seguro ao mais pesado:
+
+```bash
+# 1. cache de build e imagens penduradas (não toca em volume)
+docker builder prune -af
+docker image prune -f
+
+# 2. pacotes e logs do sistema
+sudo apt-get clean
+sudo apt-get autoremove --purge -y
+sudo journalctl --vacuum-size=50M
+
+# 3. lixeira, cache do usuário e revisões antigas de snap
+rm -rf ~/.local/share/Trash/* ~/.cache/thumbnails
+sudo snap list --all | awk '/disabled/{print $1, $3}'
+```
+
+**Modelos do Ollama.** Eles ficam em `/usr/share/ollama/.ollama/models` — o serviço roda como usuário
+`ollama`, então o peso deles **não aparece na sua home** nem no `du` de `~`. Veja o que existe e
+remova tudo menos o `OLLAMA_MODEL` do `.env`:
+
+```bash
+grep '^OLLAMA_MODEL=' .env          # qual modelo o assistente usa (ex.: qwen2.5:1.5b)
+ollama list                         # nome e tamanho de cada modelo baixado
+sudo du -sh /usr/share/ollama/.ollama/models
+ollama rm <nome-do-modelo-que-nao-usa>
+```
+
+Remova um por vez e confira com `ollama list` antes de seguir. Rebaixar `WHISPER_MODEL` de `small`
+para `base` também economiza ~300 MB no volume — mas só depois de tudo funcionar.
+
+**Blobs.** Os dados ficam em `.../models/blobs` e o `ollama rm` já descarta os que deixam de ser
+referenciados por um manifesto. O que nenhum comando do CLI limpa são os blobs de `pull`
+interrompido — compare o que existe com o que é referenciado:
+
+```bash
+sudo bash -c '
+S=/usr/share/ollama/.ollama/models
+find "$S/manifests" -type f -print0 | xargs -0 cat | grep -o "sha256:[0-9a-f]*" | sort -u > /tmp/u
+find "$S/blobs" -type f -printf "%f\n" | sed "s/^sha256-/sha256:/" | sort -u > /tmp/e
+du -sh "$S/blobs"
+echo "--- órfãos (seguros de apagar) ---"
+comm -13 /tmp/u /tmp/e
+'
+```
+
+Só apague o que o `comm -13` listar: remover um blob ainda referenciado corrompe o modelo e a única
+recuperação é um `ollama pull` novo. Para apagar de fato:
+
+```bash
+sudo bash -c 'S=/usr/share/ollama/.ollama/models; comm -13 /tmp/u /tmp/e | while read -r d; do rm -f "$S/blobs/${d/:/-}"; done'
+```
+
+Se a lista de órfãos vier vazia — o caso mais comum — todo o peso é de modelos registrados e não há o
+que apagar em `blobs`: a limpeza é o `ollama rm` dos modelos que você não usa.
+
+Se ainda faltar espaço, pare os containers e remova tudo **menos volumes**:
+
+```bash
+docker compose --env-file .env --profile core --profile voice down
+docker system prune -af          # NUNCA --volumes
+```
+
+Nada disso mexe no volume `assistente-local-data`, onde fica a memória do assistente. Um
+`docker system prune --volumes` apagaria essa memória junto — por isso o aviso acima.
+
 ## Iniciar junto com o Ubuntu (console de TV)
 
 Para o NUC ligar e já mostrar o assistente na TV:
