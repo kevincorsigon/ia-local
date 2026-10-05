@@ -101,7 +101,7 @@ assert_bind_reachable_from_docker() {
   [[ -n "$addrs" ]] || return 0
   while read -r addr; do
     case "$addr" in
-      0.0.0.0|::) return 0 ;;
+      0.0.0.0|::|\*) return 0 ;;
     esac
   done <<<"$addrs"
   {
