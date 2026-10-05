@@ -65,6 +65,17 @@ if ! docker info >/dev/null 2>&1; then
 fi
 "${COMPOSE[@]}" config --quiet
 
+# Espaço em disco: o build das imagens + Kokoro (~1,5 GB) + modelos de fala pedem alguns GB.
+# Só avisa, não bloqueia — a conta varia conforme o cache que já existe.
+livre_mb="$(df -Pm /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}' || true)"
+if [[ -z "$livre_mb" ]]; then
+  livre_mb="$(df -Pm "$ROOT_DIR" | awk 'NR==2 {print $4}' || true)"
+fi
+if [[ -n "$livre_mb" && "$livre_mb" -lt 3072 ]]; then
+  echo "Aviso: só ${livre_mb} MB livres no disco do Docker; o build pode acabar com 'No space left on device'." >&2
+  echo "  Ver: df -h | Limpar: sudo apt-get clean; sudo journalctl --vacuum-size=100M; docker builder prune -af" >&2
+fi
+
 echo "Construindo as imagens..."
 "${COMPOSE[@]}" --profile core --profile voice build
 
