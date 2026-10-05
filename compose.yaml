@@ -31,6 +31,7 @@ services:
       LLM_MODE: ${LLM_MODE:-ollama}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-llama3-8b-8192}
+      AUTO_OLLAMA_TIMEOUT_SECONDS: ${AUTO_OLLAMA_TIMEOUT_SECONDS:-10}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       # --- Tuning de velocidade por requisição (options.* do /api/chat) ---
       # Windows + 9070 XT: NUM_CTX=8192, NUM_BATCH=1024.

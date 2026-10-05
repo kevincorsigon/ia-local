@@ -2,6 +2,7 @@
 Fábrica para alternar entre diferentes provedores de LLM (Ollama, Groq, etc.)
 mantendo uma interface unificada compatível com OpenAI.
 """
+import asyncio
 import os
 import httpx
 import logging
@@ -20,6 +21,47 @@ OLLAMA_THINK = os.getenv("OLLAMA_THINK", "false").strip().lower() in {"1", "true
 CHAT_TIMEOUT_SECONDS = float(os.getenv("CHAT_TIMEOUT_SECONDS", "180"))
 
 logger = logging.getLogger(__name__)
+
+
+class AutoRoutingState:
+    def __init__(self):
+        self.consecutive_ollama_timeouts = 0
+        self.cloud_priority_remaining = 0
+        self.alternating = False
+        self.next_alternate_provider = "ollama"
+
+    def reset(self) -> None:
+        self.consecutive_ollama_timeouts = 0
+        self.cloud_priority_remaining = 0
+        self.alternating = False
+        self.next_alternate_provider = "ollama"
+
+    def next_provider(self) -> str:
+        if self.cloud_priority_remaining:
+            self.cloud_priority_remaining -= 1
+            if self.cloud_priority_remaining == 0:
+                self.alternating = True
+                self.next_alternate_provider = "ollama"
+            return "cloud"
+        if self.alternating:
+            provider = self.next_alternate_provider
+            self.next_alternate_provider = "ollama" if provider == "cloud" else "cloud"
+            return provider
+        return "ollama"
+
+    def record_ollama_timeout(self) -> None:
+        self.consecutive_ollama_timeouts += 1
+        if self.consecutive_ollama_timeouts >= 5:
+            self.consecutive_ollama_timeouts = 0
+            self.cloud_priority_remaining = 5
+            self.alternating = False
+
+    def record_ollama_success(self) -> None:
+        self.consecutive_ollama_timeouts = 0
+
+
+_auto_routing = AutoRoutingState()
+
 
 class LLMProvider:
     """Interface base para provedores de LLM."""
@@ -59,7 +101,8 @@ class OllamaProvider(LLMProvider):
         last_connection_error = None
         for base_url in candidates:
             try:
-                async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_SECONDS) as client:
+                timeout = kwargs.get("timeout_seconds", CHAT_TIMEOUT_SECONDS)
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(f"{base_url}/api/chat", json=payload)
                     response.raise_for_status()
                     data = response.json()
@@ -103,8 +146,57 @@ class GroqProvider(LLMProvider):
             message = data.get("choices", [{}])[0].get("message", {})
             return {"message": message, "sources": []}
 
+class AutoProvider(LLMProvider):
+    """Prefere Ollama, usa cloud se o local passar do limite e volta ao local em 422."""
+
+    def __init__(self):
+        self.ollama = OllamaProvider()
+        self.cloud = GroqProvider()
+        self.ollama_timeout = float(os.getenv("AUTO_OLLAMA_TIMEOUT_SECONDS", "10"))
+
+    async def _generate_ollama(
+        self,
+        messages: List[Dict[str, str]],
+        timeout: float | None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        try:
+            request = self.ollama.generate(messages, **kwargs)
+            result = await asyncio.wait_for(request, timeout=timeout) if timeout else await request
+        except (asyncio.TimeoutError, httpx.TimeoutException):
+            _auto_routing.record_ollama_timeout()
+            raise
+        _auto_routing.record_ollama_success()
+        return result
+
+    async def _generate_cloud(
+        self,
+        messages: List[Dict[str, str]],
+        **kwargs,
+    ) -> Dict[str, Any]:
+        try:
+            return await self.cloud.generate(messages, **kwargs)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 422:
+                raise
+            logger.info("Cloud retornou 422; tentando Ollama")
+            return await self._generate_ollama(messages, timeout=self.ollama_timeout, **kwargs)
+
+    async def generate(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        preferred_provider = _auto_routing.next_provider()
+        if preferred_provider == "cloud":
+            return await self._generate_cloud(messages, **kwargs)
+
+        try:
+            return await self._generate_ollama(messages, timeout=self.ollama_timeout, **kwargs)
+        except (asyncio.TimeoutError, httpx.TimeoutException):
+            logger.info("Ollama excedeu %.1f s; usando cloud", self.ollama_timeout)
+            return await self._generate_cloud(messages, **kwargs)
+
 def get_llm_provider() -> LLMProvider:
-    mode = os.getenv("LLM_MODE", "ollama").lower()
+    mode = os.getenv("LLM_MODE", "ollama").strip().lower()
+    if mode == "auto":
+        return AutoProvider()
     if mode == "groq" or mode == "cloud":
         return GroqProvider()
     return OllamaProvider()

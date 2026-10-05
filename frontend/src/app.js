@@ -595,11 +595,17 @@ async function checkHealth() {
     const response = await fetch("/health");
     const health = await response.json();
     const cloudMode = health.llm_mode === "cloud";
-    const ready = cloudMode || (health.ollama === "ok" && health.model_available);
-    providerReadout.textContent = cloudMode ? "CLOUD // GROQ" : "OLLAMA // LOCAL";
+    const autoMode = health.llm_mode === "auto";
+    const ollamaReady = health.ollama === "ok" && health.model_available;
+    const ready = cloudMode || ollamaReady;
+    providerReadout.textContent = cloudMode
+      ? "CLOUD // GROQ"
+      : autoMode ? "AUTO // OLLAMA + CLOUD" : "OLLAMA // LOCAL";
     connection.textContent = cloudMode
       ? "Cloud conectado"
-      : ready ? "Ollama conectado" : health.ollama === "ok" ? "Modelo indisponível" : "Ollama indisponível";
+      : autoMode
+        ? ollamaReady ? "Ollama preferido · cloud reserva" : "Ollama indisponível · cloud reserva"
+        : ready ? "Ollama conectado" : health.ollama === "ok" ? "Modelo indisponível" : "Ollama indisponível";
     connection.className = `connection ${ready ? "ready" : "offline"}`;
   } catch {
     connection.textContent = "Backend indisponível";

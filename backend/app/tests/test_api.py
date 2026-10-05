@@ -1,6 +1,7 @@
 """Testes de API do backend com Ollama, ferramentas e Kokoro simulados (Fase 9 da SPEC)."""
 from __future__ import annotations
 
+import asyncio
 import io
 import wave
 from urllib.parse import parse_qs, urlparse
@@ -8,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from app import main, tools
+from app import llm_factory, main, tools
 from app.tests.conftest import ollama_reply, raises
 
 OLLAMA_TAGS = {"models": [{"name": main.OLLAMA_MODEL}]}
@@ -19,6 +20,11 @@ GEO_ROUTE = "geocoding-api.open-meteo.com"
 FORECAST_ROUTE = "api.open-meteo.com/v1/forecast"
 BRAVE_ROUTE = "api.search.brave.com"
 TTS_ROUTE = "/v1/audio/speech"
+
+
+@pytest.fixture(autouse=True)
+def reset_auto_routing_state() -> None:
+    llm_factory._auto_routing.reset()
 
 GEO_REPLY = {
     "results": [
@@ -73,7 +79,7 @@ def test_health_degradado_nao_derruba_a_interface(client, external) -> None:
     assert config.json()["assistant_name"] == main.ASSISTANT_NAME
 
 
-@pytest.mark.parametrize(("mode", "expected"), [("cloud", "cloud"), ("groq", "cloud"), ("ollama", "ollama")])
+@pytest.mark.parametrize(("mode", "expected"), [("cloud", "cloud"), ("groq", "cloud"), ("ollama", "ollama"), ("auto", "auto")])
 def test_health_identifica_modo_llm(client, external, monkeypatch, mode, expected) -> None:
     monkeypatch.setenv("LLM_MODE", mode)
     external({TAGS_ROUTE: lambda request: httpx.Response(503, json={})})
@@ -160,6 +166,123 @@ def test_chat_usa_groq_quando_configurado(client, external, monkeypatch, llm_mod
     assert enviado["model"] == "llama-3.3-70b-versatile"
     assert enviado["max_tokens"] == main.MAX_RESPONSE_TOKENS
     assert "options" not in enviado
+
+
+def test_chat_auto_tenta_cloud_quando_ollama_excede_limite(client, external, monkeypatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "auto")
+    monkeypatch.setenv("AUTO_OLLAMA_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("GROQ_API_KEY", "teste-chave")
+    calls = external(
+        {
+            CHAT_ROUTE: raises(httpx.ReadTimeout("Ollama lento")),
+            "api.groq.com": lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "Resposta cloud."}}]},
+            ),
+        }
+    )
+
+    response = client.post("/api/chat", json={"message": "Responda apenas: teste."})
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Resposta cloud."
+    assert len(calls.urls(CHAT_ROUTE)) == 1
+    assert len(calls.urls("api.groq.com")) == 1
+    assert calls.unmatched == []
+
+
+def test_chat_auto_aplica_timeout_configurado_ao_ollama(client, external, monkeypatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "auto")
+    monkeypatch.setenv("AUTO_OLLAMA_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setenv("GROQ_API_KEY", "teste-chave")
+    ollama_started = False
+
+    async def slow_ollama(self, messages, **kwargs):
+        nonlocal ollama_started
+        ollama_started = True
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(llm_factory.OllamaProvider, "generate", slow_ollama)
+    calls = external(
+        {
+            "api.groq.com": lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "Resposta cloud."}}]},
+            ),
+        }
+    )
+
+    response = client.post("/api/chat", json={"message": "Responda apenas: teste."})
+
+    assert response.status_code == 200
+    assert ollama_started
+    assert response.json()["answer"] == "Resposta cloud."
+    assert len(calls.urls("api.groq.com")) == 1
+    assert calls.unmatched == []
+
+
+def test_chat_auto_volta_ao_ollama_quando_cloud_retorna_422(client, external, monkeypatch) -> None:
+    monkeypatch.setenv("LLM_MODE", "auto")
+    monkeypatch.setenv("GROQ_API_KEY", "teste-chave")
+    ollama_attempts = 0
+
+    def ollama_timeout_then_reply(request: httpx.Request) -> httpx.Response:
+        nonlocal ollama_attempts
+        ollama_attempts += 1
+        if ollama_attempts == 1:
+            raise httpx.ReadTimeout("Ollama lento")
+        return httpx.Response(200, json={"message": {"content": "Resposta local."}})
+
+    calls = external(
+        {
+            CHAT_ROUTE: ollama_timeout_then_reply,
+            "api.groq.com": lambda request: httpx.Response(422, json={"error": "unprocessable"}),
+        }
+    )
+
+    response = client.post("/api/chat", json={"message": "Responda apenas: teste."})
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Resposta local."
+    assert len(calls.urls(CHAT_ROUTE)) == 2
+    assert len(calls.urls("api.groq.com")) == 1
+    assert calls.unmatched == []
+
+
+def test_chat_auto_prioriza_cloud_apos_cinco_timeouts_e_depois_alterna(
+    client, external, monkeypatch
+) -> None:
+    monkeypatch.setenv("LLM_MODE", "auto")
+    monkeypatch.setenv("GROQ_API_KEY", "teste-chave")
+    ollama_attempts = 0
+
+    def ollama_timeout_five_then_reply(request: httpx.Request) -> httpx.Response:
+        nonlocal ollama_attempts
+        ollama_attempts += 1
+        if ollama_attempts <= 5:
+            raise httpx.ReadTimeout("Ollama lento")
+        return httpx.Response(200, json={"message": {"content": "Resposta local."}})
+
+    calls = external(
+        {
+            CHAT_ROUTE: ollama_timeout_five_then_reply,
+            "api.groq.com": lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "Resposta cloud."}}]},
+            ),
+        }
+    )
+
+    answers = [
+        client.post("/api/chat", json={"message": f"Teste {index}"}).json()["answer"]
+        for index in range(12)
+    ]
+
+    assert answers[:10] == ["Resposta cloud."] * 10
+    assert answers[10:] == ["Resposta local.", "Resposta cloud."]
+    assert len(calls.urls(CHAT_ROUTE)) == 6
+    assert len(calls.urls("api.groq.com")) == 11
+    assert calls.unmatched == []
 
 
 def test_chat_desliga_thinking_e_reaproveita_thinking_vazio(client, external) -> None:
