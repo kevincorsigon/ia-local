@@ -290,6 +290,86 @@ docker compose --env-file .env --profile core logs -f backend
 docker compose --env-file .env --profile core down
 ```
 
+## Problemas comuns (Linux/NUC)
+
+**`Error: listen tcp 0.0.0.0:11434: bind: address already in use` ou o bootstrap não acha o Ollama.**
+Há mais de um Ollama disputando a porta. Deixe o serviço do `systemd` como dono dela:
+
+```bash
+sudo pkill -f 'ollama serve'          # derruba instâncias soltas
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+sudo tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+ss -tlnp | grep 11434                 # precisa mostrar 0.0.0.0:11434
+curl -s http://127.0.0.1:11434/api/tags | head -c 80
+```
+
+O `OLLAMA_HOST=0.0.0.0` é obrigatório: com o padrão `127.0.0.1` o **container não alcança** o Ollama
+do host, e o bootstrap para em "Os containers não alcançaram o Ollama". Restrinja a porta `11434` ao
+host/rede Docker com firewall — não a exponha à internet.
+
+**O bootstrap para pedindo senha.** Os scripts usam `sudo -n`, que nunca pede senha. Se o seu `sudo`
+exige senha, deixe o Ollama já rodando antes de executar; se ele avisar no meio do caminho, rode
+`sudo systemctl restart ollama` e execute `./scripts/bootstrap.sh` de novo (é idempotente).
+
+**`.env` editado no Windows.** Chega em CRLF e o `\r` entra dentro do valor (modelo, porta, store),
+quebrando o script. O `bootstrap.sh` normaliza sozinho; confira com `grep -c $'\r' .env` — o esperado
+é `0`.
+
+**Acessar de outra máquina da casa.** O Compose publica a interface só em `127.0.0.1`. Para abrir na
+LAN, troque no `compose.yaml` a porta por `"${WEB_PORT:-8080}:8080"` — sem autenticação, mantenha na
+rede local — ou use um túnel SSH (`ssh -L 8080:localhost:8080 usuario@nuc`).
+
+## Iniciar junto com o Ubuntu (console de TV)
+
+Para o NUC ligar e já mostrar o assistente na TV:
+
+```bash
+bash scripts/install-autostart.sh        # (ou ./scripts/install-autostart.sh, com chmod +x)
+```
+
+Ele faz três coisas (idempotente):
+
+1. habilita `docker.service` e `ollama.service` no boot;
+2. cria o serviço de sistema **`assistente-local`**, que roda o `scripts/bootstrap.sh` no boot — como
+   o **seu usuário**, para não criar arquivos do root dentro do repositório;
+3. cria um autostart gráfico (`~/.config/autostart/assistente-console.desktop`) que abre o
+   **navegador padrão** em `http://localhost:<WEB_PORT>` **quando a interface responde**
+   (`scripts/open-frontend.sh` espera até 3 minutos — o primeiro boot é lento por causa dos
+   downloads).
+
+Controle:
+
+```bash
+sudo systemctl start assistente-local      # subir agora, sem reiniciar
+systemctl status assistente-local
+journalctl -u assistente-local -f          # acompanhar a subida
+```
+
+Dois ajustes que só se fazem uma vez:
+
+- **Login automático** do usuário (Configurações → Usuários), senão o autostart gráfico não roda —
+  ele depende da sessão gráfica.
+- O usuário precisa estar no grupo **`docker`**: `sudo usermod -aG docker $USER` e saia/entre na
+  sessão. O instalador avisa se faltar.
+
+Para abrir em tela cheia de verdade, troque a linha final do `scripts/open-frontend.sh` por
+`exec chromium-browser --kiosk "$URL"` (ou use o botão de tela cheia do próprio console — o gráfico
+de barras no canto superior esquerdo).
+
+Para desfazer:
+
+```bash
+sudo systemctl disable --now assistente-local
+sudo rm /etc/systemd/system/assistente-local.service
+rm ~/.config/autostart/assistente-console.desktop
+sudo systemctl daemon-reload
+```
+
 ## O que falta validar
 
 - Repetir build, bootstrap e medições no Ubuntu e no Pentium J5040 (as medições registradas usam a GPU do Windows).

@@ -10,6 +10,14 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+# Um .env editado no Windows chega com CRLF (fim de linha \r\n). No Linux o "\r" fica dentro do
+# valor — nome do modelo, porta, caminho do store de modelos — e quebra o script silenciosamente.
+# Normaliza antes de qualquer leitura.
+if grep -q $'\r' "$ENV_FILE" 2>/dev/null; then
+  echo "Normalizando o .env (CRLF -> LF)..."
+  sed -i 's/\r$//' "$ENV_FILE"
+fi
+
 read_env() {
   local key="$1" fallback="$2" value
   value="$(sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1)"

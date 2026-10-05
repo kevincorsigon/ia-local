@@ -100,6 +100,10 @@ STATE
 start_ollama_service() {
   has_systemd || return 1
   systemctl list-unit-files 2>/dev/null | grep -q '^ollama\.service' || return 1
+  # Já está ativo: nada a subir.
+  if systemctl is-active --quiet ollama 2>/dev/null; then
+    return 0
+  fi
   if [[ "$EUID" -eq 0 ]]; then
     systemctl start ollama
     return 0
@@ -108,13 +112,21 @@ start_ollama_service() {
     sudo -n systemctl start ollama
     return 0
   fi
-  return 1
+  # A unidade existe, mas subir exige senha (sudo -n não passa). Devolve 2 para o chamador
+  # orientar o usuário — subir um 'ollama serve' paralelo colidiria com o serviço na porta.
+  return 2
 }
 
 start_wsl_background() {
   command -v ollama >/dev/null 2>&1 || return 1
+  # Porta já ocupada significa que existe um Ollama rodando (ou o próprio serviço systemd).
+  # Subir outro resultaria em "bind: address already in use" e atrapalharia o que já responde.
+  if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":${OLLAMA_PREFER_PORT}[[:space:]]"; then
+    echo "A porta ${OLLAMA_PREFER_PORT} já está em uso — não vou iniciar um segundo 'ollama serve'."
+    return 0
+  fi
   mkdir -p "$(dirname "$OLLAMA_LOG_FILE")"
-  echo "Iniciando 'ollama serve' no WSL (bind $OLLAMA_SERVE_HOST); log em $OLLAMA_LOG_FILE"
+  echo "Iniciando 'ollama serve' no host (bind $OLLAMA_SERVE_HOST); log em $OLLAMA_LOG_FILE"
   local launcher=(env OLLAMA_HOST="$OLLAMA_SERVE_HOST")
   if [[ -n "$OLLAMA_MODELS_DIR" ]]; then
     launcher+=(OLLAMA_MODELS="$OLLAMA_MODELS_DIR")
@@ -200,19 +212,26 @@ if [[ -z "$MODE" ]]; then
   if ! api_ready "$OLLAMA_HOST_URL"; then
     started=0
     if start_ollama_service; then
-      echo "ollama.service iniciado via systemd."
+      echo "ollama.service pronto via systemd."
       started=1
-    elif command -v ollama >/dev/null 2>&1; then
+    else
+      code=$?
+      if [[ "$code" -eq 2 ]]; then
+        echo "O serviço ollama existe, mas iniciá-lo exige senha (o script usa 'sudo -n', sem prompt)." >&2
+        echo "Rode:  sudo systemctl restart ollama" >&2
+        echo "Depois rode ./scripts/bootstrap.sh de novo." >&2
+        exit 1
+      fi
       start_wsl_background && started=1
     fi
     if [[ "$started" -eq 0 ]]; then
-      echo "Não consegui iniciar o Ollama no WSL." >&2
-      echo "Inicie manualmente (Ubuntu: 'sudo systemctl start ollama'; WSL: 'OLLAMA_HOST=$OLLAMA_SERVE_HOST ollama serve')" >&2
+      echo "Não consegui iniciar o Ollama no host." >&2
+      echo "Inicie manualmente (Ubuntu: 'sudo systemctl restart ollama'; WSL: 'OLLAMA_HOST=$OLLAMA_SERVE_HOST ollama serve')" >&2
       echo "e confira OLLAMA_HOST_URL no .env." >&2
       exit 1
     fi
     if ! wait_ready "$OLLAMA_HOST_URL" "$OLLAMA_TIMEOUT_SECONDS"; then
-      echo "O Ollama do WSL não ficou disponível em $OLLAMA_HOST_URL após ${OLLAMA_TIMEOUT_SECONDS}s." >&2
+      echo "O Ollama não ficou disponível em $OLLAMA_HOST_URL após ${OLLAMA_TIMEOUT_SECONDS}s." >&2
       if [[ -f "$OLLAMA_LOG_FILE" ]]; then
         tail -n 20 "$OLLAMA_LOG_FILE" >&2
       fi
