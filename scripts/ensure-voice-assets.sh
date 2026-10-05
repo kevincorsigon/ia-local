@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="$ROOT_DIR/.env"
+ENV_FILE="${ASSISTANT_ENV_FILE:-$ROOT_DIR/.env}"
+if [[ "$ENV_FILE" != /* ]]; then
+  ENV_FILE="$ROOT_DIR/$ENV_FILE"
+fi
 
 read_env() {
   local key="$1" fallback="$2" value=""

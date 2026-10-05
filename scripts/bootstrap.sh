@@ -4,11 +4,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="$ROOT_DIR/.env"
+ENV_FILE="${ASSISTANT_ENV_FILE:-$ROOT_DIR/.env}"
+if [[ "$ENV_FILE" != /* ]]; then
+  ENV_FILE="$ROOT_DIR/$ENV_FILE"
+fi
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "Arquivo .env não encontrado. Copie .env.example para .env." >&2
+  echo "Arquivo de ambiente não encontrado: $ENV_FILE" >&2
   exit 1
 fi
+export ASSISTANT_ENV_FILE="$ENV_FILE"
 
 # Um .env editado no Windows chega com CRLF (fim de linha \r\n). No Linux o "\r" fica dentro do
 # valor — nome do modelo, porta, caminho do store de modelos — e quebra o script silenciosamente.

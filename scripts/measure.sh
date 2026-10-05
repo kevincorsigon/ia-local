@@ -5,9 +5,12 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="$ROOT_DIR/.env"
+ENV_FILE="${ASSISTANT_ENV_FILE:-$ROOT_DIR/.env}"
+if [[ "$ENV_FILE" != /* ]]; then
+  ENV_FILE="$ROOT_DIR/$ENV_FILE"
+fi
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "Arquivo .env não encontrado. Copie .env.example para .env." >&2
+  echo "Arquivo de ambiente não encontrado: $ENV_FILE" >&2
   exit 1
 fi
 
@@ -120,8 +123,14 @@ fi
 section "Velocidade de geração do Ollama (chamada direta)"
 PROMPT="Explique em uma frase o que é fotossíntese."
 # think=false: sem isso o Gemma 4 gasta o num_predict no raciocínio e devolve vazio.
+# options espelha o tuning do .env (o backend manda o mesmo no /api/chat).
+OLLAMA_NUM_CTX_M="$(read_env OLLAMA_NUM_CTX 2048)"
+OLLAMA_NUM_THREAD_M="$(read_env OLLAMA_NUM_THREAD 0)"
+OLLAMA_NUM_BATCH_M="$(read_env OLLAMA_NUM_BATCH 512)"
+OLLAMA_TEMPERATURE_M="$(read_env OLLAMA_TEMPERATURE 0)"
+say "- Tuning medido: num_ctx=$OLLAMA_NUM_CTX_M num_thread=$OLLAMA_NUM_THREAD_M num_batch=$OLLAMA_NUM_BATCH_M temperature=$OLLAMA_TEMPERATURE_M num_predict=$MAX_RESPONSE_TOKENS"
 GENERATE_JSON="$(curl --silent --max-time 600 -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"$PROMPT\",\"stream\":false,\"think\":false,\"options\":{\"num_predict\":$MAX_RESPONSE_TOKENS}}" \
+  -d "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"$PROMPT\",\"stream\":false,\"think\":false,\"options\":{\"num_predict\":$MAX_RESPONSE_TOKENS,\"num_ctx\":$OLLAMA_NUM_CTX_M,\"num_thread\":$OLLAMA_NUM_THREAD_M,\"num_batch\":$OLLAMA_NUM_BATCH_M,\"temperature\":$OLLAMA_TEMPERATURE_M}}" \
   "$OLLAMA_HOST_URL/api/generate")"
 EVAL_COUNT="$(json_number "$GENERATE_JSON" eval_count)"
 EVAL_DURATION="$(json_number "$GENERATE_JSON" eval_duration)"

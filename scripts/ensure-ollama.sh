@@ -7,10 +7,13 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="$ROOT_DIR/.env"
+ENV_FILE="${ASSISTANT_ENV_FILE:-$ROOT_DIR/.env}"
+if [[ "$ENV_FILE" != /* ]]; then
+  ENV_FILE="$ROOT_DIR/$ENV_FILE"
+fi
 STATE_FILE="$ROOT_DIR/data/ollama-mode.env"
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "Arquivo .env não encontrado. Copie .env.example para .env." >&2
+  echo "Arquivo de ambiente não encontrado: $ENV_FILE" >&2
   exit 1
 fi
 
@@ -27,6 +30,15 @@ OLLAMA_HOST_URL="$(read_env OLLAMA_HOST_URL http://127.0.0.1:11434)"
 OLLAMA_MODEL="$(read_env OLLAMA_MODEL qwen2.5:1.5b)"
 OLLAMA_SERVE_HOST="$(read_env OLLAMA_SERVE_HOST 0.0.0.0)"
 OLLAMA_MODELS_DIR="$(read_env OLLAMA_MODELS_DIR "")"
+# Tuning do servidor lido do .env (mesmos valores do tune-ollama-nuc.sh e do
+# ollama-windows.ps1): garante que o 'ollama serve' de reserva suba otimizado.
+OLLAMA_KEEP_ALIVE_ENV="$(read_env OLLAMA_KEEP_ALIVE 30m)"
+OLLAMA_CTX_ENV="$(read_env OLLAMA_CONTEXT_LENGTH 2048)"
+OLLAMA_FLASH_ENV="$(read_env OLLAMA_FLASH_ATTENTION 1)"
+OLLAMA_KV_ENV="$(read_env OLLAMA_KV_CACHE_TYPE "")"
+OLLAMA_PARALLEL_ENV="$(read_env OLLAMA_NUM_PARALLEL 1)"
+OLLAMA_MODELS_ENV="$(read_env OLLAMA_MAX_LOADED_MODELS 1)"
+OLLAMA_QUEUE_ENV="$(read_env OLLAMA_MAX_QUEUE 512)"
 OLLAMA_TIMEOUT_SECONDS="${OLLAMA_TIMEOUT_SECONDS:-60}"
 OLLAMA_LOG_FILE="$ROOT_DIR/data/ollama-host.log"
 
@@ -165,7 +177,17 @@ start_wsl_background() {
   fi
   mkdir -p "$(dirname "$OLLAMA_LOG_FILE")"
   echo "Iniciando 'ollama serve' no host (bind $OLLAMA_SERVE_HOST); log em $OLLAMA_LOG_FILE"
-  local launcher=(env OLLAMA_HOST="$OLLAMA_SERVE_HOST")
+  # Tuning do servidor vem do .env: sem isso o serve de reserva sobe com defaults lentos.
+  local launcher=(env OLLAMA_HOST="$OLLAMA_SERVE_HOST"
+    OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE_ENV"
+    OLLAMA_CONTEXT_LENGTH="$OLLAMA_CTX_ENV"
+    OLLAMA_FLASH_ATTENTION="$OLLAMA_FLASH_ENV"
+    OLLAMA_NUM_PARALLEL="$OLLAMA_PARALLEL_ENV"
+    OLLAMA_MAX_LOADED_MODELS="$OLLAMA_MODELS_ENV"
+    OLLAMA_MAX_QUEUE="$OLLAMA_QUEUE_ENV")
+  if [[ -n "$OLLAMA_KV_ENV" ]]; then
+    launcher+=(OLLAMA_KV_CACHE_TYPE="$OLLAMA_KV_ENV")
+  fi
   if [[ -n "$OLLAMA_MODELS_DIR" ]]; then
     launcher+=(OLLAMA_MODELS="$OLLAMA_MODELS_DIR")
   fi

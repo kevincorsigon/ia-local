@@ -18,6 +18,8 @@ cp .env.example .env
 
 `OLLAMA_HOST_URL` é usado pelo script no host. `OLLAMA_BASE_URL` é usado pelo backend dentro do container. Revise essas URLs conforme sua instalação no Ubuntu/WSL, além do modelo e da porta web.
 
+Para iniciar com o perfil CPU do NUC, mantenha `.env.nuc` na raiz e rode `ASSISTANT_ENV_FILE=.env.nuc ./scripts/bootstrap.sh`. Esse seletor também é usado pelos scripts de medição, healthcheck, autostart e pelo tuning do serviço: `sudo ./scripts/tune-ollama-nuc.sh .env.nuc`. Sem o seletor, os scripts continuam usando `.env`.
+
 Edite `config/assistant.yaml` para mudar o nome, a personalidade, as alcunhas e o tempo de continuação. A escuta contínua é opcional e começa somente quando o usuário ativa “Ativar alcunhas” na interface.
 
 O clima consulta Open-Meteo somente quando a pergunta pede previsão e inclui uma cidade brasileira. Pesquisa geral e jogos usam Brave Search: configure `BRAVE_SEARCH_API_KEY` em `.env` para ativá-los. O Docker Compose injeta essa variável no container do backend em tempo de execução; a chave não é copiada para a imagem nem para o frontend. Sem ela, o assistente informa que a pesquisa precisa ser configurada. O código não consulta a web para perguntas gerais.

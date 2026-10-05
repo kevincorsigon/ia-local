@@ -30,13 +30,23 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 # Mantém o modelo carregado entre mensagens: sem isso o Ollama o descarrega após
 # ~5 minutos de ociosidade e a próxima pergunta paga o carregamento de novo.
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+# --- Tuning de velocidade (tudo via .env, ver .env.example) ---
 # Janela de contexto enviada em ``options.num_ctx``. O padrão do Ollama (32k no
 # Qwen 2.5) aloca um KV-cache enorme e o prefill em CPU fica muito lento no NUC.
 # 2048 cobre system-prompt + 4-8 turnos + ferramenta e é ~4-8x mais rápido que 32k.
+# Na GPU (Windows/9070 XT) dá para subir para 8192 sem custo sensível.
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "2048"))
 # Threads por requisição (``options.num_thread``). 0 = o Ollama decide (todos os
-# núcleos). No NUC, fixe em nproc-2 para sobrar CPU para Whisper/Piper.
+# núcleos). No NUC, use os 4 núcleos para geração; reduza para 2 sob carga concorrente de voz.
 OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", "0"))
+# Lote de avaliação (``options.num_batch``). Maior = prefill mais rápido, mas
+# usa mais RAM/VRAM. 512 é o default do Ollama; 1024 acelera a GPU, 256 economiza no NUC.
+OLLAMA_NUM_BATCH = int(os.getenv("OLLAMA_NUM_BATCH", "512"))
+# Previsões especulativas (``options.num_predict`` já é MAX_RESPONSE_TOKENS).
+# ``temperature`` 0 = determinístico e levemente mais rápido (menos amostragem).
+OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0"))
+# Repete o prompt N vezes para aquecer o cache (só diagnóstico). 0 = desligado.
+OLLAMA_REPEAT_PENALTY = float(os.getenv("OLLAMA_REPEAT_PENALTY", "1.0"))
 # Segunda tentativa quando o Ollama configurado não responde. Cobre o caso de o
 # container subir sem passar pelo bootstrap, que é quem escolhe Windows ou WSL.
 OLLAMA_FALLBACK_URL = os.getenv("OLLAMA_FALLBACK_URL", "").strip().rstrip("/")
@@ -575,10 +585,13 @@ async def chat(request: ChatRequest) -> ChatResponse:
         ],
         "options": {
             "num_predict": MAX_RESPONSE_TOKENS,
-            # num_ctx pequeno = prefill rápido em CPU (ver OLLAMA_NUM_CTX acima).
+            # Tudo via .env (ver .env.example): num_ctx / num_thread /
+            # num_batch / temperature / repeat_penalty.
             "num_ctx": OLLAMA_NUM_CTX,
-            # num_thread 0 = deixa o Ollama decidir; no NUC fixe via .env.
             "num_thread": OLLAMA_NUM_THREAD,
+            "num_batch": OLLAMA_NUM_BATCH,
+            "temperature": OLLAMA_TEMPERATURE,
+            "repeat_penalty": OLLAMA_REPEAT_PENALTY,
         },
     }
 

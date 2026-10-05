@@ -16,6 +16,10 @@ if [[ "$(id -u)" -eq 0 && -z "${SUDO_USER:-}" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ASSISTANT_ENV_FILE:-$ROOT_DIR/.env}"
+if [[ "$ENV_FILE" != /* ]]; then
+  ENV_FILE="$ROOT_DIR/$ENV_FILE"
+fi
 USER_NAME="${SUDO_USER:-$(id -un)}"
 USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 SERVICE_NAME="assistente-local"
@@ -23,8 +27,8 @@ UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 AUTOSTART_DIR="${USER_HOME}/.config/autostart"
 DESKTOP_FILE="${AUTOSTART_DIR}/assistente-console.desktop"
 
-if [[ ! -f "$ROOT_DIR/.env" ]]; then
-  echo "Falta o .env em $ROOT_DIR. Copie o .env.example e ajuste antes." >&2
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Arquivo de ambiente não encontrado: $ENV_FILE" >&2
   exit 1
 fi
 
@@ -56,6 +60,7 @@ Type=oneshot
 RemainAfterExit=yes
 User=${USER_NAME}
 Environment=HOME=${USER_HOME}
+Environment=ASSISTANT_ENV_FILE=${ENV_FILE}
 WorkingDirectory=${ROOT_DIR}
 ExecStart=/bin/bash ${ROOT_DIR}/scripts/bootstrap.sh
 TimeoutStartSec=3600

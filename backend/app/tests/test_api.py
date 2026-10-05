@@ -114,6 +114,12 @@ def test_chat_geral_usa_so_o_modelo_local(client, external) -> None:
     assert enviado["messages"][0]["role"] == "system"
     assert main.ASSISTANT_NAME in enviado["messages"][0]["content"]
     assert enviado["options"]["num_predict"] == main.MAX_RESPONSE_TOKENS
+    # Tuning de velocidade via .env: o backend manda tudo em options.*.
+    assert enviado["options"]["num_ctx"] == main.OLLAMA_NUM_CTX
+    assert enviado["options"]["num_thread"] == main.OLLAMA_NUM_THREAD
+    assert enviado["options"]["num_batch"] == main.OLLAMA_NUM_BATCH
+    assert enviado["options"]["temperature"] == main.OLLAMA_TEMPERATURE
+    assert enviado["options"]["repeat_penalty"] == main.OLLAMA_REPEAT_PENALTY
     # Thinking desligado por padrão: sem think=false o Gemma 4 gasta o orçamento
     # no raciocínio e devolve content vazio (foi o HC reprovado com 400 e 1200).
     assert enviado["think"] is False
