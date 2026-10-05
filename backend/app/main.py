@@ -258,6 +258,8 @@ async def ollama_status() -> tuple[str, bool]:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     ollama, model_present = await ollama_status()
+    configured_mode = os.getenv("LLM_MODE", "ollama").strip().lower()
+    llm_mode = "cloud" if configured_mode in {"cloud", "groq"} else "ollama"
     memory_state = memory.status()
     try:
         memory_state["count"] = len(await memory.list_memories())
@@ -266,6 +268,7 @@ async def health() -> dict[str, Any]:
         memory_state["available"] = False
     return {
         "status": "ok" if ollama == "ok" and model_present else "degraded",
+        "llm_mode": llm_mode,
         "ollama": ollama,
         "model": OLLAMA_MODEL,
         "model_available": model_present,

@@ -25,6 +25,7 @@ const emptyState = document.querySelector("#empty-state");
 const face = document.querySelector("#face");
 const stateLabel = document.querySelector("#state-label");
 const connection = document.querySelector("#connection");
+const providerReadout = document.querySelector("#provider-readout");
 const assistantName = document.querySelector("#assistant-name");
 // O identificador da sessão fica no localStorage (não no sessionStorage): assim a conversa
 // sobrevive a recarregar a página e a fechar/reabrir a aba, dentro do TTL do backend.
@@ -593,10 +594,12 @@ async function checkHealth() {
   try {
     const response = await fetch("/health");
     const health = await response.json();
-    const ready = health.ollama === "ok" && health.model_available;
-    connection.textContent = ready
-      ? "Ollama conectado"
-      : health.ollama === "ok" ? "Modelo indisponível" : "Ollama indisponível";
+    const cloudMode = health.llm_mode === "cloud";
+    const ready = cloudMode || (health.ollama === "ok" && health.model_available);
+    providerReadout.textContent = cloudMode ? "CLOUD // GROQ" : "OLLAMA // LOCAL";
+    connection.textContent = cloudMode
+      ? "Cloud conectado"
+      : ready ? "Ollama conectado" : health.ollama === "ok" ? "Modelo indisponível" : "Ollama indisponível";
     connection.className = `connection ${ready ? "ready" : "offline"}`;
   } catch {
     connection.textContent = "Backend indisponível";

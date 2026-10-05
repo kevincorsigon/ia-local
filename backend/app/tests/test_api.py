@@ -73,6 +73,17 @@ def test_health_degradado_nao_derruba_a_interface(client, external) -> None:
     assert config.json()["assistant_name"] == main.ASSISTANT_NAME
 
 
+@pytest.mark.parametrize(("mode", "expected"), [("cloud", "cloud"), ("groq", "cloud"), ("ollama", "ollama")])
+def test_health_identifica_modo_llm(client, external, monkeypatch, mode, expected) -> None:
+    monkeypatch.setenv("LLM_MODE", mode)
+    external({TAGS_ROUTE: lambda request: httpx.Response(503, json={})})
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["llm_mode"] == expected
+
+
 def test_config_publica_nao_expoe_segredos(client, external, monkeypatch) -> None:
     monkeypatch.setattr(tools, "BRAVE_SEARCH_API_KEY", "chave-super-secreta")
     external({TAGS_ROUTE: tags_ok})
