@@ -27,8 +27,11 @@ flowchart TB
     UI -->|áudio WebM/WAV| API
     API -->|encaminha áudio| STT[Vosk pt-BR\nFala para texto]
     STT -->|transcrição| API
-    API -->|texto da resposta| TTS[Kokoro pt-BR · pf_dora\nTexto para fala]
-    TTS -->|áudio WAV| UI
+    API -->|texto da resposta| TTS{Motor TTS configurável}
+    TTS -->|TTS_ENGINE=kokoro| Kokoro[Kokoro pt-BR · pf_dora]
+    TTS -->|TTS_ENGINE=piper| Piper[Piper pt-BR · dii]
+    Kokoro -->|áudio WAV| UI
+    Piper -->|áudio WAV| UI
 
     Wake[Detector local de alcunhas\nOpenWakeWord ou Vosk] -. frase reconhecida .-> UI
     UI -->|trecho de voz em memória| API

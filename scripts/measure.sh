@@ -32,7 +32,19 @@ if [[ -f "$STATE_FILE" ]]; then
   source "$STATE_FILE"
 fi
 OLLAMA_MODE="${OLLAMA_MODE:-desconhecido}"
-COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" --profile core --profile voice)
+
+# Regra única de mapeamento engine -> profile (mesma lógica de bootstrap.sh:tts_profile).
+tts_profile() {
+  local engine
+  engine="$(read_env TTS_ENGINE kokoro)"
+  if [[ "$engine" == "piper" ]]; then
+    printf '%s' "tts-piper"
+  else
+    printf '%s' "tts-kokoro"
+  fi
+}
+TTS_PROFILE="$(tts_profile)"
+COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" --profile core --profile "$TTS_PROFILE")
 FAILURES=0
 
 if ! command -v curl >/dev/null 2>&1; then

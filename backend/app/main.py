@@ -38,8 +38,33 @@ CHAT_TIMEOUT_SECONDS = float(os.getenv("CHAT_TIMEOUT_SECONDS", "180"))
 MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "4000"))
 MAX_RESPONSE_TOKENS = int(os.getenv("MAX_RESPONSE_TOKENS", "400"))
 ASSISTANT_CONFIG = os.getenv("ASSISTANT_CONFIG", "/app/config/assistant.yaml")
-TTS_URL = os.getenv("TTS_URL", "http://kokoro:8880").rstrip("/")
-TTS_VOICE = os.getenv("TTS_VOICE", "pf_dora")
+TTS_ENGINE = os.getenv("TTS_ENGINE", "kokoro").strip().lower()
+
+
+def resolve_tts(engine: str, url_override: str, voice_override: str) -> tuple[str, str, str, str]:
+    """Resolve engine, URL e voz do TTS a partir do ambiente.
+
+    Regra única, usada pelo backend e pelos testes: o ``TTS_ENGINE`` escolhe os padrões
+    (``kokoro`` -> 8880/pf_dora, ``piper`` -> 8890/dii); ``TTS_URL``/``TTS_VOICE``
+    não-vazios vencem como override manual. Valor inválido volta para ``kokoro``.
+    """
+    engine = (engine or "").strip().lower()
+    if engine not in {"kokoro", "piper"}:
+        engine = "kokoro"
+    if engine == "piper":
+        default_url, default_voice, default_model = "http://piper:8890", "dii", "piper"
+    else:
+        default_url, default_voice, default_model = "http://kokoro:8880", "pf_dora", "kokoro"
+    url = (url_override or "").strip().rstrip("/") or default_url
+    voice = (voice_override or "").strip() or default_voice
+    return engine, url, voice, default_model
+
+
+TTS_ENGINE, TTS_URL, TTS_VOICE, TTS_MODEL = resolve_tts(
+    os.getenv("TTS_ENGINE", "kokoro"),
+    os.getenv("TTS_URL", ""),
+    os.getenv("TTS_VOICE", ""),
+)
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 
 
@@ -218,6 +243,11 @@ async def health() -> dict[str, Any]:
         "model_available": model_present,
         "memory": memory_state,
         "speech": stt.describe(),
+        "tts": {
+            "engine": TTS_ENGINE,
+            "url": TTS_URL,
+            "voice": TTS_VOICE,
+        },
     }
 
 
@@ -631,7 +661,7 @@ async def speak(request: dict[str, str]) -> Response:
             response = await client.post(
                 f"{TTS_URL}/v1/audio/speech",
                 json={
-                    "model": "kokoro",
+                    "model": TTS_MODEL,
                     "input": text,
                     "voice": TTS_VOICE,
                     "response_format": "wav",

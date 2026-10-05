@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validação de ponta a ponta do assistente já em execução.
 # Percorre as rotas públicas pela porta publicada (mesmo caminho do navegador),
-# incluindo o ciclo completo de voz: Kokoro gera o áudio e o Vosk o transcreve.
+# incluindo o ciclo completo de voz: o TTS (Kokoro ou Piper) gera o áudio e o STT o transcreve.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,7 +19,21 @@ read_env() {
 
 WEB_PORT="$(read_env WEB_PORT 8080)"
 BASE_URL="${HEALTHCHECK_BASE_URL:-http://127.0.0.1:$WEB_PORT}"
-COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" --profile core --profile voice)
+
+# Regra única de mapeamento engine -> profile (mesma lógica de bootstrap.sh:tts_profile).
+tts_profile() {
+  local engine
+  engine="$(read_env TTS_ENGINE kokoro)"
+  if [[ "$engine" == "piper" ]]; then
+    printf '%s' "tts-piper"
+  else
+    printf '%s' "tts-kokoro"
+  fi
+}
+TTS_PROFILE="$(tts_profile)"
+TTS_ENGINE="$(read_env TTS_ENGINE kokoro)"
+[[ "$TTS_ENGINE" == "piper" ]] || TTS_ENGINE="kokoro"
+COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml" --profile core --profile "$TTS_PROFILE")
 FAILURES=0
 
 if ! command -v curl >/dev/null 2>&1; then
@@ -64,7 +78,7 @@ chat() {
 step "Containers"
 if "${COMPOSE[@]}" ps --status running | grep -q backend; then
   "${COMPOSE[@]}" ps
-  ok "backend, frontend e Kokoro estão em execução."
+  ok "backend, frontend e $TTS_ENGINE estão em execução."
 else
   "${COMPOSE[@]}" ps
   fail "os containers não estão em execução; rode ./scripts/bootstrap.sh."
@@ -159,7 +173,7 @@ else
   esac
 fi
 
-step "POST /api/speak — síntese de voz feminina (Kokoro)"
+step "POST /api/speak — síntese de voz ($TTS_ENGINE)"
 WAV_FILE="$(mktemp)"
 curl --silent --show-error --max-time 180 -H 'Content-Type: application/json' \
   -d '{"text":"Olá, eu sou a Kunica e estou funcionando sem internet."}' \
@@ -176,7 +190,7 @@ else
   ok "WAV pt-BR gerado com $WAV_BYTES bytes."
 fi
 
-step "POST /api/transcribe — reconhecimento de voz sobre o áudio do Kokoro"
+step "POST /api/transcribe — reconhecimento de voz sobre o áudio de $TTS_ENGINE"
 TRANSCRIBE_JSON="$(curl --silent --show-error --max-time 180 -H 'Content-Type: audio/wav' \
   --data-binary "@$WAV_FILE" "$BASE_URL/api/transcribe")"
 TRANSCRIBE_STATUS=$?

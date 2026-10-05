@@ -693,6 +693,50 @@ def test_speak_devolve_wav_do_kokoro(client, external) -> None:
     }
 
 
+def test_speak_devolve_wav_do_piper(client, external, monkeypatch: pytest.MonkeyPatch) -> None:
+    audio = b"RIFF" + b"\x00" * 4096
+    monkeypatch.setattr(main, "TTS_ENGINE", "piper")
+    monkeypatch.setattr(main, "TTS_URL", "http://piper:8890")
+    monkeypatch.setattr(main, "TTS_VOICE", "dii")
+    monkeypatch.setattr(main, "TTS_MODEL", "piper")
+    calls = external(
+        {TTS_ROUTE: lambda request: httpx.Response(200, content=audio, headers={"content-type": "audio/wav"})}
+    )
+
+    response = client.post("/api/speak", json={"text": "Olá, eu sou a Kunica."})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert response.content == audio
+    assert calls.payloads(TTS_ROUTE)[0] == {
+        "model": "piper",
+        "input": "Olá, eu sou a Kunica.",
+        "voice": "dii",
+        "response_format": "wav",
+    }
+
+
+@pytest.mark.parametrize(
+    ("engine", "expected"),
+    [
+        ("kokoro", ("kokoro", "http://kokoro:8880", "pf_dora", "kokoro")),
+        ("piper", ("piper", "http://piper:8890", "dii", "piper")),
+        ("unknown", ("kokoro", "http://kokoro:8880", "pf_dora", "kokoro")),
+    ],
+)
+def test_resolve_tts_usa_padrao_por_motor(engine: str, expected: tuple[str, str, str, str]) -> None:
+    assert main.resolve_tts(engine, "", "") == expected
+
+
+def test_resolve_tts_preserva_overrides_nao_vazios() -> None:
+    assert main.resolve_tts("piper", "http://tts.local:9000/", "custom") == (
+        "piper",
+        "http://tts.local:9000",
+        "custom",
+        "piper",
+    )
+
+
 def test_speak_indisponivel_preserva_a_resposta_escrita(client, external) -> None:
     external({TTS_ROUTE: lambda request: httpx.Response(503, json={})})
 

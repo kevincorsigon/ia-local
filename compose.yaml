@@ -20,8 +20,12 @@ services:
       WHISPER_INITIAL_PROMPT: ${WHISPER_INITIAL_PROMPT:-}
       # O modelo do Whisper fica no volume persistente (baixa uma única vez).
       WHISPER_CACHE_DIR: /data/whisper
-      TTS_URL: http://kokoro:8880
-      TTS_VOICE: ${TTS_VOICE:-pf_dora}
+      # Motor de síntese: 'kokoro' (imagem ~1,5 GB, voz pf_dora, porta 8880) ou
+      # 'piper' (build local ~400-600 MB, voz feminina dii, porta 8890). O backend
+      # resolve URL e voz a partir daqui; TTS_URL/TTS_VOICE (opcionais) sobrepõem.
+      TTS_ENGINE: ${TTS_ENGINE:-kokoro}
+      TTS_URL: ${TTS_URL:-}
+      TTS_VOICE: ${TTS_VOICE:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
@@ -75,7 +79,7 @@ services:
     # mesmo /v1/audio/speech que o backend consome. Para trocar de fonte, defina
     # TTS_IMAGE em .env.
     image: ${TTS_IMAGE:-ghcr.io/remsky/kokoro-fastapi-cpu:latest}
-    profiles: [voice]
+    profiles: [tts-kokoro]
     environment:
       PORT: "8880"
       DEVICE: cpu
@@ -90,9 +94,29 @@ services:
       retries: 3
       start_period: 60s
 
+  piper:
+    # TTS leve: Piper (VITS) pt-BR, voz feminina dii, via sherpa-onnx (CPU).
+    # O build embute o modelo (~64 MB), então a imagem final fica em ~400-600 MB
+    # e a síntese funciona offline depois do build — sem download no bootstrap.
+    # Mesmo contrato /v1/audio/speech que o backend consome.
+    build: ./piper
+    profiles: [tts-piper]
+    environment:
+      PIPER_VOICE: ${PIPER_VOICE:-dii}
+      PIPER_THREADS: ${PIPER_THREADS:-2}
+    expose: ["8890"]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8890/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
 volumes:
   # Storage do Docker para a memória do assistente (ver backend/app/memory.py).
   # Inspecionar: docker volume inspect assistente-local-data
-  # Apagar tudo: docker compose --env-file .env --profile core --profile voice down -v
+  # Apagar tudo: docker compose --env-file .env --profile core --profile tts-kokoro down -v
+  # (ou --profile tts-piper, conforme o TTS_ENGINE em uso)
   assistant-data:
     name: assistente-local-data

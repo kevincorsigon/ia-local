@@ -24,10 +24,35 @@ read_env() {
   printf '%s' "${value:-$fallback}"
 }
 
+tts_profile() {
+  # Regra única de mapeamento engine -> profile do Compose. Os comandos docker compose
+  # deste e dos outros scripts devem usar "--profile core --profile $(tts_profile)"
+  # em vez de um profile de TTS fixo, senão o serviço errado sobe (ou nenhum sobe).
+  local engine
+  engine="$(read_env TTS_ENGINE kokoro)"
+  if [[ "$engine" == "piper" ]]; then
+    printf '%s' "tts-piper"
+  else
+    printf '%s' "tts-kokoro"
+  fi
+}
+
 OLLAMA_BASE_URL="$(read_env OLLAMA_BASE_URL http://host.docker.internal:11434)"
 WEB_PORT="$(read_env WEB_PORT 8080)"
 STATE_FILE="$ROOT_DIR/data/ollama-mode.env"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.yaml")
+
+# Profile do TTS (tts-kokoro ou tts-piper) conforme TTS_ENGINE; usado em build, up,
+# down e em toda checagem de saúde. Os comandos Compose sempre levam core + este.
+TTS_PROFILE="$(tts_profile)"
+TTS_ENGINE="$(read_env TTS_ENGINE kokoro)"
+if [[ "$TTS_ENGINE" == "piper" ]]; then
+  TTS_HEALTH_URL="http://piper:8890/health"
+else
+  TTS_ENGINE="kokoro"
+  TTS_HEALTH_URL="http://kokoro:8880/health"
+fi
+echo "Motor de síntese: $TTS_ENGINE (profile $TTS_PROFILE)"
 
 echo "Preparando Ollama (Windows/GPU primeiro, WSL como reserva) e recursos de voz..."
 bash "$ROOT_DIR/scripts/pull-models.sh"
@@ -77,7 +102,7 @@ if [[ -n "$livre_mb" && "$livre_mb" -lt 3072 ]]; then
 fi
 
 echo "Construindo as imagens..."
-"${COMPOSE[@]}" --profile core --profile voice build
+"${COMPOSE[@]}" --profile core --profile "$TTS_PROFILE" build
 
 echo "Validando a rota container -> Ollama do host ($OLLAMA_BASE_URL)..."
 # Guarda a saída da tentativa: sem ela, ">/dev/null 2>&1" esconde a causa real (recusado,
@@ -101,14 +126,14 @@ fi
 echo "Rota container -> host confirmada."
 
 echo "Iniciando os containers..."
-"${COMPOSE[@]}" --profile core --profile voice up -d
+"${COMPOSE[@]}" --profile core --profile "$TTS_PROFILE" up -d
 
 echo "Esperando o backend responder..."
 deadline=$((SECONDS + 300))
-until "${COMPOSE[@]}" exec -T backend python -c "import json,urllib.request; h=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); urllib.request.urlopen('http://kokoro:8880/health', timeout=5); assert h['ollama']=='ok' and h['model_available'] is True and h['speech']['engine']" >/dev/null 2>&1; do
+until "${COMPOSE[@]}" exec -T backend python -c "import json,urllib.request; h=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)); urllib.request.urlopen('$TTS_HEALTH_URL', timeout=5); assert h['ollama']=='ok' and h['model_available'] is True and h['speech']['engine'] and h['tts']['engine']=='$TTS_ENGINE'" >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then
-    "${COMPOSE[@]}" --profile core --profile voice ps
-    echo "Os containers iniciaram, mas o backend e o Kokoro não responderam em 300 segundos." >&2
+    "${COMPOSE[@]}" --profile core --profile "$TTS_PROFILE" ps
+    echo "Os containers iniciaram, mas o backend e o serviço de TTS ($TTS_ENGINE) não responderam em 300 segundos." >&2
     exit 1
   fi
   sleep 3
@@ -136,4 +161,4 @@ echo ""
 echo "Assistente iniciado: http://localhost:$WEB_PORT"
 echo "Health do backend:   http://localhost:$WEB_PORT/health"
 echo "Validação completa:  ./scripts/healthcheck.sh"
-echo "Parar tudo:          docker compose --env-file .env --profile core --profile voice down"
+echo "Parar tudo:          docker compose --env-file .env --profile core --profile $TTS_PROFILE down"
