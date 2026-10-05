@@ -29,6 +29,11 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # Janela de contexto por requisição (options.num_ctx). 2048 é o ponto ideal
+      # em CPU: cobre o chat + ferramenta sem o prefill lento do padrão (32k).
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-2048}
+      # Threads por requisição (options.num_thread). 0 = Ollama decide.
+      OLLAMA_NUM_THREAD: ${OLLAMA_NUM_THREAD:-0}
       # Desliga o thinking (Gemma 4, Qwen3...) por padrão: sem think=false o
       # raciocínio consome o num_predict e o content volta vazio.
       OLLAMA_THINK: ${OLLAMA_THINK:-false}

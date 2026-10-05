@@ -30,6 +30,13 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 # Mantém o modelo carregado entre mensagens: sem isso o Ollama o descarrega após
 # ~5 minutos de ociosidade e a próxima pergunta paga o carregamento de novo.
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+# Janela de contexto enviada em ``options.num_ctx``. O padrão do Ollama (32k no
+# Qwen 2.5) aloca um KV-cache enorme e o prefill em CPU fica muito lento no NUC.
+# 2048 cobre system-prompt + 4-8 turnos + ferramenta e é ~4-8x mais rápido que 32k.
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "2048"))
+# Threads por requisição (``options.num_thread``). 0 = o Ollama decide (todos os
+# núcleos). No NUC, fixe em nproc-2 para sobrar CPU para Whisper/Piper.
+OLLAMA_NUM_THREAD = int(os.getenv("OLLAMA_NUM_THREAD", "0"))
 # Segunda tentativa quando o Ollama configurado não responde. Cobre o caso de o
 # container subir sem passar pelo bootstrap, que é quem escolhe Windows ou WSL.
 OLLAMA_FALLBACK_URL = os.getenv("OLLAMA_FALLBACK_URL", "").strip().rstrip("/")
@@ -566,7 +573,13 @@ async def chat(request: ChatRequest) -> ChatResponse:
             *history,
             {"role": "user", "content": user_content},
         ],
-        "options": {"num_predict": MAX_RESPONSE_TOKENS},
+        "options": {
+            "num_predict": MAX_RESPONSE_TOKENS,
+            # num_ctx pequeno = prefill rápido em CPU (ver OLLAMA_NUM_CTX acima).
+            "num_ctx": OLLAMA_NUM_CTX,
+            # num_thread 0 = deixa o Ollama decidir; no NUC fixe via .env.
+            "num_thread": OLLAMA_NUM_THREAD,
+        },
     }
 
     data: dict[str, Any] | None = None
