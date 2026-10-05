@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
+from app.llm_factory import get_llm_provider
 from app import memory, stt, wake
 from app.tools import (
     ToolUnavailable,
@@ -583,35 +584,24 @@ async def chat(request: ChatRequest) -> ChatResponse:
             *history,
             {"role": "user", "content": user_content},
         ],
-        "options": {
-            "num_predict": MAX_RESPONSE_TOKENS,
-            # Tudo via .env (ver .env.example): num_ctx / num_thread /
-            # num_batch / temperature / repeat_penalty.
-            "num_ctx": OLLAMA_NUM_CTX,
-            "num_thread": OLLAMA_NUM_THREAD,
-            "num_batch": OLLAMA_NUM_BATCH,
-            "temperature": OLLAMA_TEMPERATURE,
-            "repeat_penalty": OLLAMA_REPEAT_PENALTY,
-        },
     }
 
     data: dict[str, Any] | None = None
     last_connection_error: httpx.HTTPError | None = None
     try:
-        for base_url in ollama_candidates():
-            try:
-                async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_SECONDS) as client:
-                    response = await client.post(f"{base_url}/api/chat", json=payload)
-                    response.raise_for_status()
-                    data = response.json()
-                remember_ollama(base_url)
-                break
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                # A instância configurada está fora do ar; tenta a alternativa
-                # (Windows com GPU x WSL) antes de desistir.
-                last_connection_error = exc
-        if data is None:
-            raise last_connection_error or httpx.ConnectError("nenhum Ollama respondeu")
+        # Usa a fábrica para decidir qual provedor utilizar
+        provider = get_llm_provider()
+        data = await provider.generate(
+            payload["messages"],
+            temperature=OLLAMA_TEMPERATURE,
+            max_tokens=MAX_RESPONSE_TOKENS,
+            num_ctx=OLLAMA_NUM_CTX,
+            num_thread=OLLAMA_NUM_THREAD,
+            num_batch=OLLAMA_NUM_BATCH,
+            repeat_penalty=OLLAMA_REPEAT_PENALTY,
+            ollama_candidates=ollama_candidates(),
+            remember_ollama=remember_ollama,
+        )
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status_code=504,

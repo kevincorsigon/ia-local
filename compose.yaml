@@ -28,6 +28,9 @@ services:
       TTS_VOICE: ${TTS_VOICE:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      LLM_MODE: ${LLM_MODE:-ollama}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama3-8b-8192}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       # --- Tuning de velocidade por requisição (options.* do /api/chat) ---
       # Windows + 9070 XT: NUM_CTX=8192, NUM_BATCH=1024.

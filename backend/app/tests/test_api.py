@@ -125,6 +125,32 @@ def test_chat_geral_usa_so_o_modelo_local(client, external) -> None:
     assert enviado["think"] is False
 
 
+@pytest.mark.parametrize("llm_mode", ["groq", "cloud"])
+def test_chat_usa_groq_quando_configurado(client, external, monkeypatch, llm_mode) -> None:
+    monkeypatch.setenv("LLM_MODE", llm_mode)
+    monkeypatch.setenv("GROQ_API_KEY", "teste-chave")
+    monkeypatch.setenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+    def groq_reply(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer teste-chave"
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "Resposta Groq."}}]},
+        )
+
+    calls = external({"api.groq.com": groq_reply})
+
+    response = client.post("/api/chat", json={"message": "Responda apenas: teste."})
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Resposta Groq."
+    assert calls.unmatched == []
+    enviado = calls.payloads("api.groq.com")[0]
+    assert enviado["model"] == "llama-3.3-70b-versatile"
+    assert enviado["max_tokens"] == main.MAX_RESPONSE_TOKENS
+    assert "options" not in enviado
+
+
 def test_chat_desliga_thinking_e_reaproveita_thinking_vazio(client, external) -> None:
     """Gemma 4 com thinking ligado: content vazio + thinking usa o thinking."""
 
