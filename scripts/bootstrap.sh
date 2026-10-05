@@ -43,6 +43,26 @@ if [[ -f "$STATE_FILE" ]]; then
 fi
 
 echo "Validando configuração do Compose..."
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker não encontrado no PATH. O assistente roda em containers." >&2
+  echo "No Ubuntu:" >&2
+  echo "  sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2" >&2
+  echo "  sudo systemctl enable --now docker" >&2
+  echo "  sudo usermod -aG docker \"\$USER\" && newgrp docker" >&2
+  echo "Depois rode ./scripts/bootstrap.sh de novo." >&2
+  exit 1
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  echo "O comando 'docker' existe, mas 'docker compose' (plugin v2) não." >&2
+  echo "Instale com: sudo apt-get install -y docker-compose-v2" >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "O Docker está instalado, mas este usuário não fala com o daemon." >&2
+  echo "Confira: sudo systemctl enable --now docker" >&2
+  echo "         sudo usermod -aG docker \"\$USER\"   # saia e entre na sessão depois" >&2
+  exit 1
+fi
 "${COMPOSE[@]}" config --quiet
 
 echo "Construindo as imagens..."

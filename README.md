@@ -292,6 +292,22 @@ docker compose --env-file .env --profile core down
 
 ## Problemas comuns (Linux/NUC)
 
+**`./scripts/bootstrap.sh: linha 38: docker: comando não encontrado`** (ou qualquer `docker: comando não encontrado`).
+O Docker Engine não está instalado — ou o usuário ainda não está no grupo `docker`. No Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-v2
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+newgrp docker          # ou saia e entre na sessão
+docker compose version # precisa imprimir a versão do plugin v2
+./scripts/bootstrap.sh
+```
+
+O pacote `docker.io` do Ubuntu já traz o Engine; `docker-compose-v2` é o plugin que o bootstrap chama
+(`docker compose`, com espaço). Sem o grupo `docker`, o comando existe mas o daemon recusa a conexão.
+
 **`Error: listen tcp 0.0.0.0:11434: bind: address already in use` ou o bootstrap não acha o Ollama.**
 Há mais de um Ollama disputando a porta. Deixe o serviço do `systemd` como dono dela:
 
