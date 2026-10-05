@@ -868,8 +868,9 @@ fetch("/api/config/public")
       "| continuação:", followUpSeconds, "s",
       "| conversa:", conversationSeconds, "s"
     );
-    if (window.localStorage.getItem(wakeModeStorageKey) === "1") {
-      // Reativa as alcunhas ao abrir a página, sem precisar clicar de novo.
+    if (window.localStorage.getItem(wakeModeStorageKey) !== "0") {
+      // A escuta por alcunhas nasce habilitada: só continua desligada se o
+      // usuário optou por desativá-la antes ("0" salvo no navegador).
       void setWakeMode(true);
     }
   })

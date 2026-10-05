@@ -22,7 +22,7 @@ pscp -P 22 C:\dev\ia-local\.env.nuc kevin@192.168.3.103:/home/kevin/ia-local/.en
 
 Para iniciar com o perfil CPU do NUC, mantenha `.env.nuc` na raiz e rode `ASSISTANT_ENV_FILE=.env.nuc ./scripts/bootstrap.sh`. Esse seletor também é usado pelos scripts de medição, healthcheck, autostart e pelo tuning do serviço: `sudo ./scripts/tune-ollama-nuc.sh .env.nuc`. Sem o seletor, os scripts continuam usando `.env`.
 
-Edite `config/assistant.yaml` para mudar o nome, a personalidade, as alcunhas e o tempo de continuação. A escuta contínua é opcional e começa somente quando o usuário ativa “Ativar alcunhas” na interface.
+Edite `config/assistant.yaml` para mudar o nome, a personalidade, as alcunhas e o tempo de continuação. A escuta contínua nasce habilitada (botão “Alcunhas ligadas · desligar”); ela só continua desligada se o usuário optou por desativá-la antes — a preferência fica salva no navegador.
 
 O clima consulta Open-Meteo somente quando a pergunta pede previsão e inclui uma cidade brasileira. Pesquisa geral e jogos usam Brave Search: configure `BRAVE_SEARCH_API_KEY` em `.env` para ativá-los. O Docker Compose injeta essa variável no container do backend em tempo de execução; a chave não é copiada para a imagem nem para o frontend. Sem ela, o assistente informa que a pesquisa precisa ser configurada. O código não consulta a web para perguntas gerais.
 
@@ -90,7 +90,7 @@ conferir o que está guardado: `curl http://localhost:8080/api/memories`.
 
 ## Conversa só por voz (alcunhas)
 
-Com **“Ativar alcunhas”** ligado, nada mais precisa de clique: a preferência fica salva no navegador e o assistente volta a escutar quando você recarrega a página. O rótulo embaixo do rosto mostra só o essencial — `Diga "Kunica" quando quiser falar` ou `Ouvindo…`; os detalhes técnicos ficam no terminal de debug.
+Com a escuta por alcunhas ligada desde o início, nada mais precisa de clique: ela nasce habilitada e só continua desligada se você optou por desativá-la antes — a preferência fica salva no navegador e o assistente volta a escutar quando você recarrega a página. O rótulo embaixo do rosto mostra só o essencial — `Diga "Kunica" quando quiser falar` ou `Ouvindo…`; os detalhes técnicos ficam no terminal de debug.
 
 1. Diga a alcunha **e** a pergunta na mesma fala — *“TVzinha, qual é a previsão do tempo?”*. O trecho depois da alcunha vai direto para o modelo e a resposta é falada; o painel de chat pode continuar fechado.
 2. **Conversa contínua:** depois de responder, o assistente mantém a conversa ativa por `conversation_seconds` (60 s por padrão, em `config/assistant.yaml`). Fale normalmente, **sem repetir a alcunha**, como num chat — cada fala renova o tempo, e o relógio reinicia quando a resposta termina de ser falada. Passando esse tempo sem nenhuma fala, ele volta a esperar a alcunha.

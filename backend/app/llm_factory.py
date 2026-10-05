@@ -161,9 +161,17 @@ class AutoProvider(LLMProvider):
         **kwargs,
     ) -> Dict[str, Any]:
         try:
+            # ``self.ollama.generate`` returns a coroutine that will perform an HTTP request.
+            # We use ``asyncio.wait_for`` to enforce the user‑defined timeout.  When the
+            # operation exceeds the configured limit, ``asyncio.TimeoutError`` is raised.
+            # The external mock used in tests can raise ``httpx.ReadTimeout`` directly –
+            # this exception does **not** inherit from ``httpx.TimeoutException`` but
+            # represents a timeout on the HTTP level.  In that case we also want to
+            # treat it as a provider failure and trigger the fallback logic.
             request = self.ollama.generate(messages, **kwargs)
             result = await asyncio.wait_for(request, timeout=timeout) if timeout else await request
-        except (asyncio.TimeoutError, httpx.TimeoutException):
+        except (asyncio.TimeoutError, httpx.TimeoutException, httpx.ReadTimeout):
+            # Record a timeout so that the state machine can switch providers.
             _auto_routing.record_ollama_timeout()
             raise
         _auto_routing.record_ollama_success()
