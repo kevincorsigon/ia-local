@@ -16,6 +16,8 @@ Assistente local em pt-BR: Ollama roda no host; backend, interface e serviços d
 cp .env.example .env
 ```
 
+pscp -P 22 C:\dev\ia-local\.env.nuc kevin@192.168.3.103:/home/kevin/ia-local/.env
+
 `OLLAMA_HOST_URL` é usado pelo script no host. `OLLAMA_BASE_URL` é usado pelo backend dentro do container. Revise essas URLs conforme sua instalação no Ubuntu/WSL, além do modelo e da porta web.
 
 Para iniciar com o perfil CPU do NUC, mantenha `.env.nuc` na raiz e rode `ASSISTANT_ENV_FILE=.env.nuc ./scripts/bootstrap.sh`. Esse seletor também é usado pelos scripts de medição, healthcheck, autostart e pelo tuning do serviço: `sudo ./scripts/tune-ollama-nuc.sh .env.nuc`. Sem o seletor, os scripts continuam usando `.env`.
