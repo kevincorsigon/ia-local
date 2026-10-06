@@ -60,7 +60,7 @@ let wakeLabel = "Kunica";
 // Detecção de fala (VAD) no navegador: a captura termina quando o usuário para de
 // falar, então nada depende de clicar em "Parar" nem em "Enviar". O limiar de fala é
 // calibrado a cada captura pelo ruído do ambiente (ver captureSpeech).
-const VAD_SILENCE_MS = 800;
+const VAD_SILENCE_MS = 500;
 const VAD_MIN_MS = 500;
 const VAD_POLL_MS = 80;
 // Piso e teto do limiar de fala: abaixo do piso o ruído passaria por fala; acima do teto
@@ -484,6 +484,7 @@ async function handleWakeClip(blob) {
     return;
   }
   const startedAt = performance.now();
+  setState("thinking", "Transcrevendo sua fala…");
   try {
     const response = await fetch("/api/transcribe?scan_wake=true", {
       method: "POST",
