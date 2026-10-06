@@ -44,6 +44,8 @@ let currentAudioUrl = null;
 // “pensando/falando” e a escuta por alcunhas espera: era o loop de escuta que reescrevia o estado
 // para “listening” a cada 80 ms e fazia a boca parar de mexer no meio do áudio.
 let assistantBusy = false;
+let pendingTimerSpeech = [];
+let drainingTimerSpeech = false;
 // Trechos de fala em andamento (null = nada tocando): permite "Parar áudio" encerrar tudo.
 let speechQueue = null;
 let wakeRecorder = null;
@@ -454,8 +456,6 @@ async function waitWhileSpeaking() {
 
 async function listenForWake() {
   while (wakeEnabled && wakeStream) {
-    await waitWhileSpeaking();
-    if (!wakeEnabled) break;
     const capture = await captureSpeech(wakeStream, {
       maxMs: 20000,
       fallbackMs: 8000,
@@ -475,6 +475,23 @@ function startConversation(message) {
   conversationUntil = performance.now() + conversationSeconds * 1000;
   log(`conversa ativa por ${conversationSeconds}s — próxima fala não precisa de alcunha`);
   void sendMessage(message);
+}
+
+function isStopSpeakingCommand(text) {
+  const normalized = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR").replace(/[^a-z0-9]+/g, " ").trim();
+  return /^(?:kunica )?(?:pode )?(?:parar(?: de falar)?|pare|para(?: de falar)?|cala a boca|fica quieta)$/.test(normalized);
+}
+
+function stopSpeechByVoice() {
+  if (!speechQueue && !currentAudio) return;
+  log("voz interrompida por comando falado");
+  speechQueue = null;
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+  }
+  finishPlayback();
 }
 
 async function handleWakeClip(blob) {
@@ -506,6 +523,14 @@ async function handleWakeClip(blob) {
       setState("listening", "Ouvi um som, mas não entendi as palavras. Fale mais perto do microfone.");
       return;
     }
+
+    const stopCommandText = result.wake?.query || transcript;
+    if (assistantBusy && isStopSpeakingCommand(stopCommandText)) {
+      stopSpeechByVoice();
+      return;
+    }
+    // Durante a reprodução, a captura serve apenas para comandos de interrupção.
+    if (assistantBusy) return;
 
     const now = performance.now();
     if (result.wake) {
@@ -1080,3 +1105,32 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
   void sendMessage(input.value);
 });
+
+async function drainTimerSpeech() {
+  if (assistantBusy || drainingTimerSpeech || pendingTimerSpeech.length === 0) return;
+  drainingTimerSpeech = true;
+  try {
+    while (pendingTimerSpeech.length > 0 && !assistantBusy) {
+      await speakAnswer(pendingTimerSpeech.shift());
+    }
+  } finally {
+    drainingTimerSpeech = false;
+  }
+}
+
+// Busca temporizadores concluídos; o backend associa cada aviso à sessão atual.
+window.setInterval(async () => {
+  try {
+    const response = await fetch(`/api/timers/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) return;
+    const { notifications = [] } = await response.json();
+    for (const item of notifications) {
+      const message = `O temporizador terminou${item.text ? `: ${item.text}` : "."}`;
+      addBubble("assistant", message);
+      pendingTimerSpeech.push(message);
+    }
+    void drainTimerSpeech();
+  } catch {
+    // O chat continua funcionando quando a consulta de avisos falha.
+  }
+}, 3000);

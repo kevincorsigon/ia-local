@@ -1,12 +1,57 @@
 import os
 import re
 import unicodedata
-from datetime import date
+import json
+import ast
+import operator
+import logging
+import uuid
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import httpx
+from simpleeval import simple_eval
 
 BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+_TIMER_FILE = Path(os.getenv("MEMORY_DIR", "/data")) / "timers.json"
+_TIMER_LOGGER = logging.getLogger("assistant.timers")
+
+
+def _read_timers() -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(_TIMER_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError:
+        _TIMER_LOGGER.exception("Arquivo de temporizadores ilegível")
+        try:
+            _TIMER_FILE.replace(_TIMER_FILE.with_suffix(f".corrupt-{int(datetime.now().timestamp())}.json"))
+        except OSError:
+            _TIMER_LOGGER.warning("Não consegui preservar o arquivo de temporizadores ilegível")
+        return []
+    items = payload.get("timers", []) if isinstance(payload, dict) else []
+    if not isinstance(items, list):
+        return []
+    return [
+        item for item in items
+        if isinstance(item, dict)
+        and isinstance(item.get("session_id"), str)
+        and isinstance(item.get("id"), str)
+        and isinstance(item.get("text"), str)
+        and isinstance(item.get("due_at"), (int, float))
+    ]
+
+
+def _write_timers(timers: list[dict[str, Any]]) -> None:
+    _TIMER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _TIMER_FILE.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps({"version": 1, "timers": timers}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temporary, _TIMER_FILE)
 
 MEMORY_SAVE_PATTERN = re.compile(
     r"\b(grava|grave|gravar|guarda|guarde|guardar|memoriza|memorize|memorizar|"
@@ -62,8 +107,38 @@ def route_question(message: str) -> str | None:
     text = _MEMORY_LEAD_QUESTION.sub("", message).casefold()
     if MEMORY_LIST_PATTERN.search(text):
         return "memory_list"
+    if re.search(r"\b(?:lembrete|me lembra|me lembre)\b.*\b(?:daqui(?:\s+a)?|em)\s+(?:\d+|um|uma|dois|duas|tr[eê]s|quatro|cinco)\s*(?:segundos?|minutos?|horas?)\b", text):
+        return "timer"
+    if re.search(r"\b(?:me faz|fa[zç]|adiciona|cria|coloca)\s+(?:um\s+)?lembrete\b.*\b(?:daqui(?:\s+a)?|em)\s+(?:\d+|um|uma|dois|duas|tr[eê]s|quatro|cinco)\s*(?:segundos?|minutos?|horas?)\b", text):
+        return "timer"
+    if re.search(r"\bme lembra\b.*\b(?:dia\s+\d{1,2}|amanh[ãa]|hoje|em\s+\d+\s*(?:dias?|semanas?|horas?))\b", text):
+        return "agenda"
     if MEMORY_SAVE_PATTERN.search(text) and not _looks_like_question(text):
         return "memory"
+    if re.search(r"\b(que horas|horas s[aã]o|que dia [eé] hoje|data de hoje|dia da semana|que dia ser[aá])\b", text):
+        return "datetime"
+    if re.search(r"\b(timer|temporizador|me avisa|me lembre em|alarme)\b", text):
+        return "timer"
+    if re.search(r"\b(converte|converter|cota[cç][aã]o|quanto (?:est[aá]|custa|vale)|pre[cç]o do|valor do)\b.*\b(d[oó]lar|euro|bitcoin|btc|eth|ethereum)\b|\b(d[oó]lar|euro|bitcoin|btc|eth|ethereum)\b.*\b(hoje|agora|quanto|cota[cç][aã]o|pre[cç]o)\b", text):
+        return "quote"
+    if re.search(r"\b(quanto [eé]|calcula|calcule|calcular|converte|converter|quantos km|quantas milhas)\b|\d\s*[+*/-]\s*\d|\d\s*%\s*(de|do|da)", text):
+        return "calculator"
+    if re.search(r"\b(n[oó]t[ií]cias? de hoje|not[ií]cias do dia|resumo das not[ií]cias|manchetes de hoje)\b", text):
+        return "news"
+    if re.search(r"\b(ol[ií]mpic\w*|medalhista|medalha|medalhas)\b.*\b(últim[ao]|ultima|última|jogos|edi[cç][aã]o|ol[ií]mpiada)\b|\b(últim[ao]|ultima|última)\b.*\b(ol[ií]mpic\w*|jogos ol[ií]mpicos|ol[ií]mpiada)\b", text):
+        return "web_search"
+    if re.search(r"\b(consult\w*|pesquis\w*|busc\w*|procur\w*)\b.*\b(internet|web|google)\b", text):
+        return "web_search"
+    if re.search(r"\b(consultou|pesquisou|buscou)\b", text):
+        return "web_search"
+    if re.search(r"\b(me lembra|lembrete|agenda|agendado|compromissos)\b", text):
+        return "agenda"
+    if re.search(r"\b(tarefa|to-?do|minha lista|lista de tarefas|comprar .+ na lista|adicion(?:a|e|ar) .+ lista|adicion(?:a|e|ar) .+ tarefa|inclu(?:i|a|ir) .+ tarefa|coloc(?:a|ar|e) .+ tarefa|marc(?:a|ar|que) .+ como feito|conclu[ií]|(?:remove|apaga) .+(?:tarefa|da lista|da minha lista)|adicion(?:a|e|ar)?\s*\??)\b", text):
+        return "todo"
+    if re.search(r"\b(significa|significado de|define|defini[cç][aã]o de|como se diz|traduza|traduzir)\b", text):
+        return "dictionary"
+    if re.search(r"\b(piadas?|curiosidades?|verdade ou mito)\b", text):
+        return "fun"
     if re.search(r"\b(clima|tempo|previs[aã]o|chover|chuva|temperatura|temperaturas)\b", text):
         return "weather"
     if re.search(r"\b(pr[oó]ximo jogo|jogo do|jogos do|corinthians|placar|campeonato|partida)\b", text):
@@ -591,3 +666,222 @@ async def web_search_tool(
         + "\n".join(results),
         "sources": sources,
     }
+
+def datetime_tool(query: str = "") -> dict[str, Any]:
+    """Retorna hora/data atual ou a data de amanhã no fuso brasileiro."""
+    now = datetime.now(ZoneInfo(os.getenv("ASSISTANT_TIMEZONE", "America/Sao_Paulo")))
+    if re.search(r"\bamanh[ãa]\b", query, re.I):
+        target = now.date() + timedelta(days=1)
+        days = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+        return {"text": f"Amanhã será {target:%d/%m/%Y}, {days[target.weekday()]}."}
+    days = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+    return {"text": f"Agora são {now:%H:%M} de {now:%d/%m/%Y}, {days[now.weekday()]}."}
+
+
+async def timer_tool(query: str, session_id: str) -> dict[str, Any]:
+    duration = re.search(r"\b(?:daqui(?:\s+a)?|em|de)\s+(\d+|um|uma|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez)\s*(segundos?|minutos?|horas?)", query, re.I)
+    match = duration
+    if not match:
+        return {"text": "Diga quanto tempo, por exemplo: me avisa daqui a 5 minutos."}
+    words = {"um": 1, "uma": 1, "dois": 2, "duas": 2, "três": 3, "tres": 3, "quatro": 4,
+             "cinco": 5, "seis": 6, "sete": 7, "oito": 8, "nove": 9, "dez": 10}
+    amount = int(match.group(1)) if match.group(1).isdigit() else words[match.group(1).casefold()]
+    unit = match.group(2).casefold()
+    seconds = amount * (3600 if unit.startswith("hora") else 60 if unit.startswith("minuto") else 1)
+    if not 0 < seconds <= 7 * 86400:
+        return {"text": "O temporizador precisa ser de até 7 dias."}
+    label = query[match.end():].strip(" ,;:-")
+    label = re.sub(r"(?i)^(?:(?:me\s+)?(?:lembre|lembrar(?:\s+de)?|avisa)|manda(?:r)?(?:\s+eu)?|(?:eu\s+)?lembrar(?:\s+eu)?|para\s+eu|pra\s+eu)\s+", "", label)
+    label = label.strip(" .!?'\"") or "Temporizador concluído"
+    try:
+        timers = _read_timers()
+        timers.append({
+            "id": uuid.uuid4().hex,
+            "session_id": session_id,
+            "text": label,
+            "due_at": datetime.now().timestamp() + seconds,
+        })
+        _write_timers(timers)
+    except OSError:
+        _TIMER_LOGGER.exception("Não consegui persistir o novo temporizador")
+        return {"text": "Não consegui salvar o temporizador. Verifique o armazenamento de dados e tente novamente."}
+    return {"text": f"Certo, aviso você em {amount} {unit}."}
+
+
+def take_timer_notifications(session_id: str) -> list[dict[str, str]]:
+    try:
+        timers = _read_timers()
+        now = datetime.now().timestamp()
+        notifications = [
+            {"id": str(item["id"]), "text": str(item["text"])}
+            for item in timers
+            if item["session_id"] == session_id and float(item["due_at"]) <= now
+        ]
+        remaining = [
+            item for item in timers
+            if not (item["session_id"] == session_id and float(item["due_at"]) <= now)
+        ]
+        if len(remaining) != len(timers):
+            _write_timers(remaining)
+        return notifications
+    except OSError:
+        _TIMER_LOGGER.exception("Não consegui consultar os temporizadores persistidos")
+        return []
+
+
+async def quote_tool(query: str) -> dict[str, Any]:
+    """Busca câmbio na AwesomeAPI e cripto na CoinGecko."""
+    text = query.casefold()
+    async with httpx.AsyncClient(timeout=10) as client:
+        if re.search(r"bitcoin|\bbtc\b", text):
+            response = await client.get("https://api.coingecko.com/api/v3/simple/price", params={"ids": "bitcoin", "vs_currencies": "brl"})
+            response.raise_for_status(); value = response.json()["bitcoin"]["brl"]
+            return {"text": f"Bitcoin está cotado a R$ {value:,.2f} (CoinGecko)."}
+        if re.search(r"ethereum|\beth\b", text):
+            response = await client.get("https://api.coingecko.com/api/v3/simple/price", params={"ids": "ethereum", "vs_currencies": "brl"})
+            response.raise_for_status(); value = response.json()["ethereum"]["brl"]
+            return {"text": f"Ethereum está cotado a R$ {value:,.2f} (CoinGecko)."}
+        code = "EUR" if "euro" in text else "USD"
+        response = await client.get(f"https://economia.awesomeapi.com.br/json/last/{code}-BRL")
+        response.raise_for_status(); item = response.json()[f"{code}BRL"]
+        value = float(item["bid"]); label = "euros" if code == "EUR" else "dólares"
+        amount_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:d[oó]lares?|euros?)", text)
+        answer = f"1 {label[:-1]} vale R$ {value:.4f}."
+        if amount_match:
+            amount = float(amount_match.group(1).replace(",", "."))
+            answer = f"{amount:g} {label} equivalem a aproximadamente R$ {amount * value:.2f}."
+        return {"text": answer}
+
+
+async def translate_tool(query: str) -> dict[str, Any]:
+    match = re.search(r"(?:como se diz|traduza|traduzir)\s+['\"]?(.+?)['\"]?\s+(?:em|para)\s+(ingl[eê]s|portugu[eê]s|espanhol)", query, re.I)
+    if not match:
+        return {"text": "Para traduzir, diga por exemplo: como se diz obrigado em inglês?"}
+    language = match.group(2).casefold(); lang = "en" if "ingl" in language else "es" if "espan" in language else "pt"
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get("https://api.mymemory.translated.net/get", params={"q": match.group(1), "langpair": f"pt|{lang}"})
+        response.raise_for_status()
+        translated = response.json().get("responseData", {}).get("translatedText")
+        return {"text": f"A tradução é: {translated}" if translated else "Não encontrei uma tradução."}
+
+def calculator_tool(query: str) -> dict[str, Any]:
+    """Realiza cálculos e conversões básicas."""
+    q = query.lower()
+    try:
+        if "% de" in q:
+            parts = q.split("% de")
+            percent = parts[0].replace("quanto é", "").strip()
+            value = parts[1].replace("?", "").strip()
+            expr = f"({percent.replace('%', '')} / 100) * {value}"
+            result = simple_eval(expr)
+            return {"text": f"O resultado é {result}"}
+        
+        if "km" in q and "milhas" in q:
+            match = re.search(r"(\d+)\s+milhas", q)
+            if match:
+                miles = float(match.group(1))
+                km = miles * 1.60934
+                return {"text": f"{miles} milhas são aproximadamente {km:.2f} km."}
+        
+        expr = re.sub(r"(?i)^(quanto é|calcula(?:r)?|calcule)\s*", "", q).rstrip(" ?")
+        result = simple_eval(expr)
+        return {"text": f"O resultado é {result}"}
+    except Exception:
+        return {"text": f"Não consegui calcular isso. Por favor, use uma expressão matemática mais simples."}
+
+def agenda_tool(query: str) -> dict[str, Any]:
+    """Gerencia lembretes e agenda com persistência em JSON."""
+    import os
+    file_path = Path(os.getenv("MEMORY_DIR", "/data")) / "schedule.json"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as f:
+            json.dump([], f)
+    
+    with open(file_path, 'r') as f:
+        schedule = json.load(f)
+    
+    if "me lembra" in query.lower() or "agenda" in query.lower():
+        now = datetime.now(ZoneInfo(os.getenv("ASSISTANT_TIMEZONE", "America/Sao_Paulo"))).date()
+        due = now
+        if re.search(r"\bamanh[ãa]\b", query, re.I):
+            due = now + timedelta(days=1)
+        elif day_match := re.search(r"\bdia\s+(\d{1,2})(?:[/-](\d{1,2}))?\b", query, re.I):
+            day = int(day_match.group(1)); month = int(day_match.group(2) or now.month)
+            try:
+                due = date(now.year + (month < now.month), month, day)
+            except ValueError:
+                return {"text": "Não consegui interpretar essa data. Tente dizer dia e mês, como dia 15/10."}
+        schedule.append({"query": query, "date": due.isoformat(), "created_at": datetime.now().isoformat(timespec="minutes")})
+        with open(file_path, 'w') as f:
+            json.dump(schedule, f)
+        return {"text": f"Anotei na agenda para {due:%d/%m/%Y}."}
+    
+    if not schedule:
+        return {"text": "Sua agenda está vazia."}
+    return {"text": "Seus lembretes: " + "; ".join(s["query"] for s in schedule)}
+
+def todo_tool(query: str) -> dict[str, Any]:
+    """Gerencia lista de tarefas com persistência em JSON."""
+    import os
+    file_path = Path(os.getenv("MEMORY_DIR", "/data")) / "todo.json"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as f:
+            json.dump([], f)
+    
+    with open(file_path, 'r') as f:
+        todos = json.load(f)
+    
+    q = query.casefold()
+    if re.search(r"\b(remove|apaga)\b", q):
+        target = re.sub(r"(?i)^.*?\b(?:remove|apaga)\s+", "", query).strip(" .!?'\"")
+        updated = [item for item in todos if target.casefold() not in (item.get("text", "") if isinstance(item, dict) else str(item)).casefold()]
+        if len(updated) == len(todos):
+            return {"text": "Não encontrei essa tarefa na lista."}
+        with open(file_path, 'w') as f: json.dump(updated, f, ensure_ascii=False)
+        return {"text": f"Removi {target} da lista."}
+    add_match = re.search(r"\b(?:adiciona|adicione|adicionar|inclui|inclua|incluir|coloca|coloque|colocar|insere|insira)\b", q)
+    if add_match:
+        task = query[add_match.end():].strip(" ,:.-!?'\"")
+        task = re.sub(r"(?i)^(?:uma?\s+)?(?:nova\s+)?tarefa\b\s*[,.:;-]*\s*", "", task)
+        task = re.sub(r"(?i)^minha\s+lista\s+de\s+tarefas?\b\s*[,.:;-]*\s*", "", task)
+        task = re.sub(r"(?i)^que\s+(?:é|e)\s+", "", task)
+        task = re.sub(r"(?i)\s+(?:na|à)\s+(?:minha\s+)?lista(?: de tarefas)?$", "", task).strip(" .!?'")
+        task = re.sub(r"(?i)\bescova-os dentes\b", "escovar os dentes", task)
+        task = re.sub(r"(?i)\s+(?:na|à)\s+(?:minha\s+)?lista(?: de tarefas)?$", "", task).strip()
+        if not task:
+            return {"text": "Qual tarefa devo adicionar à lista?"}
+        todos.append({"text": task, "done": False})
+        with open(file_path, 'w') as f:
+            json.dump(todos, f, ensure_ascii=False)
+        return {"text": f"Adicionei {task} à sua lista."}
+    
+    if re.search(r"\b(marca|marcar|conclui|concluída|feito)\b", q):
+        target = re.sub(r"(?i)^.*?\b(?:marca|marcar|conclui|concluída|feito)\b", "", query).strip(" .!?'")
+        changed = False
+        for item in todos:
+            if isinstance(item, dict) and target.casefold() in item.get("text", "").casefold():
+                item["done"] = True; changed = True
+        with open(file_path, 'w') as f: json.dump(todos, f, ensure_ascii=False)
+        return {"text": f"Marquei {target} como concluída." if changed else "Não encontrei essa tarefa pendente."}
+    pending = [x["text"] if isinstance(x, dict) else str(x) for x in todos if not isinstance(x, dict) or not x.get("done")]
+    return {"text": "Sua lista de tarefas está vazia." if not pending else "Tarefas pendentes: " + "; ".join(pending)}
+
+async def dictionary_tool(query: str) -> dict[str, Any]:
+    """Consulta a API do Wiktionary sem fabricar definições."""
+    from urllib.parse import quote
+    match = re.search(r"(?:significa|significado de|define|definição de)\s+['\"]?(.+?)['\"]?[?.!]*$", query, re.I)
+    if not match:
+        return {"text": "Tradução automática ainda não está configurada. Posso consultar o significado de uma palavra em português."}
+    term = match.group(1).strip(" '\"")
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get(f"https://pt.wiktionary.org/api/rest_v1/page/definition/{quote(term)}")
+        response.raise_for_status()
+        entries = response.json().get("pt", [])
+        definitions = [item["definition"] for entry in entries for item in entry.get("definitions", []) if item.get("definition")]
+        return {"text": f"{term}: {definitions[0]}" if definitions else f"Não encontrei uma definição para {term}."}
+    except (httpx.HTTPError, ValueError, KeyError):
+        return {"text": "Não consegui consultar o dicionário agora."}
+

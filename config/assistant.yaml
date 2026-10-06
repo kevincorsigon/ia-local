@@ -41,3 +41,23 @@ assistant:
       detail: "notícias, preços e cotações atuais em sites reais — ex.: “pesquisa na internet o preço do dólar”"
     - title: Memória
       detail: "guardar e listar o que você pede para eu lembrar — ex.: “grave que eu moro em Itapecerica da Serra”"
+    - title: Hora e data
+      detail: "consultar a hora, a data e o dia da semana atuais"
+    - title: Cálculos básicos
+      detail: "resolver contas e porcentagens simples"
+    - title: Agenda e lembretes
+      detail: "guardar e listar lembretes no volume persistente"
+    - title: Lista de tarefas
+      detail: "adicionar e consultar tarefas pendentes"
+    - title: Dicionário e tradução
+      detail: "consultar definição de palavras"
+    - title: Temporizadores
+      detail: "programar um aviso após alguns segundos, minutos ou horas"
+    - title: Notícias
+      detail: "pesquisar as principais notícias atuais na internet"
+    - title: Cotações
+      detail: "consultar câmbio de dólar/euro e preços de Bitcoin/Ethereum"
+    - title: Entretenimento
+      detail: "pedir piadas e curiosidades ao assistente"
+    - title: Modo estudo e flashcards
+      detail: "fazer quizzes por voz ou texto, responder uma pergunta de cada vez, receber correções e uma nota — ex.: “me faça 5 perguntas sobre fotossíntese”"
