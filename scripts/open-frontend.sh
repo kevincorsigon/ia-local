@@ -42,6 +42,9 @@ abrir_kiosk() {
   # (tela cheia de verdade, sem bordas nem barra de endereço).
   # O snap do Ubuntu atende por "chromium" mas instala o binário em
   # /snap/bin, que pode não estar no PATH do autostart — cobre esse caso.
+  # --user-data-dir próprio força instância NOVA: com o Chromium já rodando,
+  # o processo novo só abriria uma aba na janela existente e ignoraria --kiosk.
+  PROFILE_CHROME="${HOME}/.cache/assistente-kiosk-chrome"
   for bin in chromium-browser chromium google-chrome google-chrome-stable /snap/bin/chromium /usr/bin/chromium-browser /usr/bin/chromium /usr/bin/google-chrome /usr/bin/google-chrome-stable; do
     caminho="$bin"
     if [[ "$bin" != /* ]]; then
@@ -49,11 +52,16 @@ abrir_kiosk() {
       [[ -z "$caminho" ]] && continue
     fi
     if [[ -x "$caminho" ]]; then
-      echo "Abrindo $URL em tela cheia ($caminho --kiosk)"
-      exec "$caminho" --kiosk --no-first-run --disable-pinch --overscroll-history-navigation=0 "$URL"
+      echo "Abrindo $URL em tela cheia ($caminho --kiosk, perfil próprio)"
+      exec "$caminho" --kiosk --no-first-run --disable-pinch --overscroll-history-navigation=0 --user-data-dir="$PROFILE_CHROME" "$URL"
     fi
   done
   # Firefox como reserva: quiosque de verdade (sem bordas nem barra).
+  # PERFIL PRÓPRIO + --new-instance é obrigatório: se o Firefox já estiver
+  # rodando, o processo novo só manda a URL para a janela aberta e IGNORA
+  # --kiosk (a página abre como aba normal — era isso que estava acontecendo).
+  PROFILE_FF="${HOME}/.cache/assistente-kiosk-firefox"
+  mkdir -p "$PROFILE_FF"
   for bin in firefox firefox-esr /snap/bin/firefox /usr/bin/firefox; do
     caminho="$bin"
     if [[ "$bin" != /* ]]; then
@@ -61,8 +69,8 @@ abrir_kiosk() {
       [[ -z "$caminho" ]] && continue
     fi
     if [[ -x "$caminho" ]]; then
-      echo "Abrindo $URL em tela cheia ($caminho --kiosk)"
-      exec "$caminho" --kiosk "$URL"
+      echo "Abrindo $URL em tela cheia ($caminho --kiosk, perfil próprio)"
+      exec "$caminho" --kiosk --new-instance --no-remote --profile "$PROFILE_FF" "$URL"
     fi
   done
   return 1
