@@ -70,10 +70,20 @@ abrir_kiosk() {
 
 if [[ "$ASSISTANT_KIOSK" == "1" ]]; then
   echo "Modo quiosque pedido (ASSISTANT_KIOSK=1, env: $ENV_FILE)"
-  abrir_kiosk || echo "Nenhum navegador com modo quiosque encontrado; abrindo no navegador padrão"
+  abrir_kiosk || {
+    echo "Nenhum navegador com modo quiosque encontrado (Chromium/Chrome/Firefox)." >&2
+    echo "Instale um, ex.:  sudo apt install -y chromium-browser" >&2
+    echo "Abrindo no navegador padrão mesmo assim." >&2
+  }
 fi
 
 echo "Abrindo $URL no navegador padrão"
 
 # O console também tem o próprio botão de tela cheia: o gráfico de barras no canto superior esquerdo.
-exec xdg-open "$URL"
+# Sem navegador instalado o xdg-open falha com mensagens confusas; deixa uma clara.
+if ! xdg-open "$URL"; then
+  echo "Nenhum navegador encontrado para abrir $URL." >&2
+  echo "Instale um, ex.:  sudo apt install -y chromium-browser" >&2
+  exit 1
+fi
+exit 0

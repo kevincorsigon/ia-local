@@ -6,12 +6,14 @@
 #   2. cria o serviço de sistema "assistente-local" (roda o bootstrap.sh no boot, como o seu usuário);
 #   3. cria um autostart gráfico que abre o navegador padrão na interface quando ela responder.
 #
-# Uso (uma vez):  ./scripts/install-autostart.sh
+# Uso (uma vez, COMO O SEU USUÁRIO — o script chama sudo sozinho):
+#   ./scripts/install-autostart.sh
 # Idempotente: rodar de novo só reescreve os arquivos.
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 && -z "${SUDO_USER:-}" ]]; then
   echo "Rode como o seu usuário (o script chama sudo quando precisa), não como root." >&2
+  echo "Se você está como root, use: su - <seu-usuário> -c 'cd <repo> && ./scripts/install-autostart.sh'" >&2
   exit 1
 fi
 
@@ -37,7 +39,7 @@ if [[ ! -d "$USER_HOME" ]]; then
   exit 1
 fi
 
-chmod +x "$ROOT_DIR/scripts/bootstrap.sh" "$ROOT_DIR/scripts/open-frontend.sh" 2>/dev/null || true
+chmod +x "$ROOT_DIR/scripts/bootstrap.sh" "$ROOT_DIR/scripts/open-frontend.sh" "$ROOT_DIR/scripts/install-autostart.sh" 2>/dev/null || true
 
 echo "Instalando para o usuário $USER_NAME, a partir de $ROOT_DIR"
 
