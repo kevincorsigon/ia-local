@@ -134,7 +134,7 @@ class GroqProvider(LLMProvider):
             "temperature": kwargs.get("temperature", 0.0),
             "max_tokens": kwargs.get("max_tokens", 400),
         }
-        async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=kwargs.get("timeout_seconds", CHAT_TIMEOUT_SECONDS)) as client:
             response = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers=headers,

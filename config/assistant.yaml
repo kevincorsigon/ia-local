@@ -48,9 +48,9 @@ assistant:
     - title: Agenda e lembretes
       detail: "guardar e listar lembretes no volume persistente"
     - title: Lista de tarefas
-      detail: "adicionar e consultar tarefas pendentes"
+      detail: "adicionar, consultar, concluir ou limpar a lista de tarefas"
     - title: Dicionário e tradução
-      detail: "consultar definição de palavras"
+      detail: "consultar definição de palavras ou tradução — ex.: ‘o que significa efêmero?’ ou ‘defina fotossíntese’"
     - title: Temporizadores
       detail: "programar um aviso após alguns segundos, minutos ou horas"
     - title: Notícias

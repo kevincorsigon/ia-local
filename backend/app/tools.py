@@ -91,6 +91,13 @@ _QUESTION_START = re.compile(
     r"^(qual|quais|quando|onde|quem|como|por\s+que|porque|pra\s+que|o\s+que|ser[aá]|"
     r"voc[eê]|pode|poderia|consegue|sabe|existe|h[aá])\b"
 )
+_TODO_CLEAR_PATTERN = re.compile(
+    r"\b(?:limpa(?:r)?|limpe|apaga(?:r)?|apague|esvazia(?:r)?|esvazie|remove(?:r)?|remova)\b"
+    r".*\b(?:(?:a\s+)?minha\s+|a\s+)?lista(?:\s+de\s+tarefas?)?\b|"
+    r"\b(?:limpa(?:r)?|limpe|apaga(?:r)?|apague|esvazia(?:r)?|esvazie|remove(?:r)?|remova)\b"
+    r".*\btodas\s+as\s+tarefas\b",
+    re.IGNORECASE,
+)
 
 
 class ToolUnavailable(Exception):
@@ -127,9 +134,17 @@ def route_question(message: str) -> str | None:
         return "news"
     if re.search(r"\b(ol[ií]mpic\w*|medalhista|medalha|medalhas)\b.*\b(últim[ao]|ultima|última|jogos|edi[cç][aã]o|ol[ií]mpiada)\b|\b(últim[ao]|ultima|última)\b.*\b(ol[ií]mpic\w*|jogos ol[ií]mpicos|ol[ií]mpiada)\b", text):
         return "web_search"
+    if re.search(r"\b(maior|mais|recordista)\b.{0,60}\b(ganhador|medalhista|medalhas?)\b.{0,60}\bol[ií]mp[ií]ad", text):
+        return "web_search"
+    if _TODO_CLEAR_PATTERN.search(text):
+        return "todo"
     if re.search(r"\b(consult\w*|pesquis\w*|busc\w*|procur\w*)\b.*\b(internet|web|google)\b", text):
         return "web_search"
     if re.search(r"\b(consultou|pesquisou|buscou)\b", text):
+        return "web_search"
+    if re.search(r"\b(t[ií]tulos?|conquistas?|ta[cç]as?|trof[eé]us?|recordes?)\b", text):
+        if re.search(r"\b(corinthians|palmeiras|flamengo|santos|s[aã]o paulo|clube|time|sele[cç][aã]o|atleta|ol[ií]mpic)\b", text):
+            return "sports"
         return "web_search"
     if re.search(r"\b(me lembra|lembrete|agenda|agendado|compromissos)\b", text):
         return "agenda"
@@ -139,9 +154,13 @@ def route_question(message: str) -> str | None:
         return "dictionary"
     if re.search(r"\b(piadas?|curiosidades?|verdade ou mito)\b", text):
         return "fun"
+    if re.search(r"\b(escala[cç][aã]o|titulares?|forma[cç][aã]o(?: inicial)?|onze inicial)\b", text):
+        return "sports"
     if re.search(r"\b(clima|tempo|previs[aã]o|chover|chuva|temperatura|temperaturas)\b", text):
         return "weather"
-    if re.search(r"\b(pr[oó]ximo jogo|jogo do|jogos do|corinthians|placar|campeonato|partida)\b", text):
+    if re.search(r"\b(libertadores|copa do brasil|brasileir[aã]o|campeonato brasileiro|sul-americana|mundial de clubes)\b", text):
+        return "sports"
+    if re.search(r"\b(jogos?|partidas?|placares?|resultados?|calend[aá]rio|campeonato|tabela|classifica[cç][aã]o)\b", text):
         return "sports"
     if re.search(
         r"\b(not[ií]cia|not[ií]cias|pesquise|pesquisa|pesquisar|procure|procurar|busca|busque|buscar|"
@@ -150,6 +169,20 @@ def route_question(message: str) -> str | None:
     ):
         return "web_search"
     return None
+
+
+def sports_requires_web(message: str) -> bool:
+    """Jogos, resultados, títulos e escalações dependem de fontes esportivas atuais."""
+    return bool(
+        re.search(
+            r"\b(jogos?|partidas?|pr[oó]xim[oa]s?|placares?|resultados?|calend[aá]rio|"
+            r"t[ií]tulos?|conquistas?|ta[cç]as?|trof[eé]us?|campe[aã]os?|campeonatos?|"
+            r"escala[cç][aã]o|titulares?|"
+            r"forma[cç][aã]o inicial|onze inicial)\b",
+            message,
+            re.I,
+        )
+    )
 
 
 def extract_memory_text(message: str) -> str:
@@ -623,7 +656,26 @@ async def web_search_tool(
 
     search_query = query
     if sports and "corinthians" in query.casefold():
-        search_query = f"próximo jogo oficial Corinthians calendário {date.today().year}"
+        today = datetime.now(ZoneInfo(os.getenv("ASSISTANT_TIMEZONE", "America/Sao_Paulo"))).date()
+        if re.search(
+            r"\b(pr[oó]xim[oa]s?\s+(?:jogos?|partidas?)|quando joga|calend[aá]rio|agenda|upcoming|"
+            r"next\s+(?:games?|matches?)|fixtures?)\b",
+            query,
+            re.I,
+        ):
+            search_query = (
+                f"{query} partidas oficiais futuras, somente após {today:%d/%m/%Y}; "
+                f"calendário atualizado {today.year}"
+            )
+        elif re.search(
+            r"\b(placar(?:es)?|resultados?|últim[oa]s?\s+(?:jogos?|partidas?)|ganhou|perdeu|empatou|"
+            r"scores?|results?|recent\s+(?:games?|matches?)|last\s+(?:games?|matches?))\b",
+            query,
+            re.I,
+        ):
+            search_query = (
+                f"{query} resultados e placares de partidas já disputadas, recentes até {today:%d/%m/%Y}"
+            )
     hint = str((source_hint or {}).get("source") or "").strip()
     if hint and (source_hint or {}).get("in_query"):
         # Memória do usuário manda usar esta fonte para este assunto: ela entra na consulta.
@@ -834,6 +886,13 @@ def todo_tool(query: str) -> dict[str, Any]:
         todos = json.load(f)
     
     q = query.casefold()
+    if _TODO_CLEAR_PATTERN.search(q):
+        if not todos:
+            return {"text": "Sua lista de tarefas já está vazia."}
+        count = len(todos)
+        with open(file_path, 'w') as f:
+            json.dump([], f, ensure_ascii=False)
+        return {"text": f"Limpei sua lista de tarefas e removi {count} tarefa(s)."}
     if re.search(r"\b(remove|apaga)\b", q):
         target = re.sub(r"(?i)^.*?\b(?:remove|apaga)\s+", "", query).strip(" .!?'\"")
         updated = [item for item in todos if target.casefold() not in (item.get("text", "") if isinstance(item, dict) else str(item)).casefold()]
