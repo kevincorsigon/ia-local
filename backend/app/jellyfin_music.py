@@ -244,20 +244,34 @@ def parse_command(message: str) -> dict[str, str] | None:
         if folded.startswith(("proxima", "proximo")):
             return {"kind": "control", "action": "next"}
         return {"kind": "control", "action": "resume"}
-    play = re.match(r"^(?:toque|toca|tocar|coloque|bota|reproduza|reproduzir)\s+(.+?)[.!?]*$", text, re.I)
+    if re.fullmatch(r"(?:um\s+)?som\s+na\s+caixa[.!?]*", folded):
+        return {"kind": "random"}
+    play = re.match(r"^(?:toque|toca|tocar|coloque|bota|reproduza|reproduzir|mete)\s+(.+?)[.!?]*$", text, re.I)
     if not play:
         return None
     target = play.group(1).strip().rstrip(".!?")
+    target = re.sub(r"\s+(?:pra|para)\s+(?:mim|n[oó]s|a gente)$", "", target, flags=re.I).strip()
     plain = _spoken(target)
+    quoted_artist = re.search(r"[\"“”'](.+?)[\"“”']", target)
+    if quoted_artist:
+        return {"kind": "random", "artist": quoted_artist.group(1).strip()}
     genre = re.search(r"(?:musicas?\s+)?(?:d[eo]\s+)?genero\s+(.+)$", plain)
     if genre:
         return {"kind": "random", "genre": target[genre.start(1):].strip()}
     genre = re.match(r"(?:uma\s+)?musicas?\s+d[eo]\s+(rock|samba|jazz|pop|sertanejo|mpb|forro|funk|eletronica|classica|metal|blues|reggae)\b", plain)
     if genre:
         return {"kind": "random", "genre": target[genre.start(1):genre.end(1)].strip()}
-    if re.fullmatch(r"(?:heavy|thrash|power|nu|hard)\s+metal|metal|rock|hard\s+rock|jazz|pop|mpb|blues|reggae|sertanejo|samba|funk|eletronica", plain):
-        return {"kind": "random", "genre": target}
-    if re.fullmatch(r"(?:(?:uma|alguma)\s+)?(?:musica|cancao|faixa)(?:\s+ai|\s+aleatoria)?", plain) or plain in {"algo", "qualquer musica"}:
+    direct_genre = re.fullmatch(r"(?:(?:um|uma)\s+)?((?:heavy|thrash|power|nu|hard)\s+metal|metal|rock|hard\s+rock|jazz|pop|mpb|blues|reggae|sertanejo|samba|funk|eletronica)", plain)
+    if direct_genre:
+        return {"kind": "random", "genre": target[direct_genre.start(1):direct_genre.end(1)].strip()}
+    article_artist = re.match(r"^(?:um|uma)\s+(.+)$", plain)
+    if article_artist:
+        candidate = article_artist.group(1).strip()
+        if not re.match(r"(?:musica|msuca|msuica|msucia|muscia|muisca|cancao|faixa|som)\b", candidate):
+            return {"kind": "random", "artist": target[article_artist.start(1):].strip().strip("\"“”'")}
+    if re.fullmatch(r"(?:(?:uma|alguma)\s+)?(?:musica|cancao|faixa)(?:\s+ai|\s+aleatoria)?", plain) or plain in {
+        "uma", "um", "som", "um som", "som na caixa", "um som na caixa", "algo", "qualquer musica",
+    }:
         return {"kind": "random"}
     original = _fold(target)
     music_word = r"(?:musica|msuca|msuica|msucia|muscia|muisca|cancao|faixa)"
@@ -270,6 +284,17 @@ def parse_command(message: str) -> dict[str, str] | None:
                 "artist": target[named.start(2):named.end(2)].strip()}
     prefix = re.match(rf"^(?:a\s+)?{music_word}\s+", original)
     return {"kind": "named", "search": target[prefix.end():] if prefix else target}
+
+
+def could_be_music_request(message: str) -> bool:
+    """Marca frases possivelmente musicais que precisam de interpretação contextual."""
+    folded = _spoken(message)
+    return bool(re.search(
+        r"\b(?:toca|toque|tocar|reproduza|reproduzir|coloca|coloque|bota|mete|manda|solta|"
+        r"ouca|ouvir|escuta|escutar|musica|faixa|cancao|som|artista|album|"
+        r"genero|jellyfin|playlist|caixa)\b",
+        folded,
+    ))
 
 
 async def _named_track(search: str, artist: str = "") -> dict[str, Any] | None:
