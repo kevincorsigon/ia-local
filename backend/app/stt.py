@@ -14,12 +14,17 @@ import logging
 import math
 import os
 import threading
+import io
+import wave
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("assistant")
 
 ENGINE = os.getenv("STT_ENGINE", "vosk").strip().lower()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo").strip()
+GROQ_STT_TIMEOUT_SECONDS = float(os.getenv("GROQ_STT_TIMEOUT_SECONDS", "20"))
 VOSK_MODEL_PATH = Path(os.getenv("VOSK_MODEL_PATH", "/models/vosk-model-small-pt-0.3"))
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
@@ -80,6 +85,8 @@ def whisper_cached() -> bool:
 
 
 def available() -> bool:
+    if ENGINE == "groq":
+        return bool(GROQ_API_KEY)
     """True quando o motor já consegue transcrever sem baixar nada novo."""
     if ENGINE == "whisper":
         if _model is not None:
@@ -93,6 +100,8 @@ def available() -> bool:
 
 
 def model_ready() -> bool:
+    if ENGINE == "groq":
+        return bool(GROQ_API_KEY)
     """O modelo está no disco (os testes usam isto para pular o que depende dele)."""
     if ENGINE == "whisper":
         return whisper_cached()
@@ -100,6 +109,8 @@ def model_ready() -> bool:
 
 
 def describe() -> dict[str, Any]:
+    if ENGINE == "groq":
+        return {"engine": "groq", "model": GROQ_STT_MODEL, "compute_type": "cloud", "cpu_threads": 0, "beam_size": 0, "available": available()}
     """Resumo do motor atual para o endpoint de saúde."""
     if ENGINE == "whisper":
         return {
@@ -172,6 +183,10 @@ def _load_whisper() -> Any:
 
 
 def warmup() -> bool:
+    if ENGINE == "groq":
+        if not GROQ_API_KEY:
+            raise ModelUnavailable("STT_ENGINE=groq exige GROQ_API_KEY configurada no ambiente do backend.")
+        return True
     """Deixa o motor pronto (baixa o modelo do Whisper na primeira vez)."""
     if ENGINE == "whisper":
         _load_whisper()
@@ -223,4 +238,20 @@ def transcribe_pcm(pcm: bytes) -> tuple[str, float]:
         return "", 0.0
     if ENGINE == "whisper":
         return _transcribe_whisper(pcm)
+    if ENGINE == "groq":
+        raise RuntimeError("A transcrição Groq precisa do cliente HTTP assíncrono.")
     return _transcribe_vosk(pcm)
+
+
+def pcm_to_wav(pcm: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(pcm)
+    return buffer.getvalue()
+
+
+def groq_prompt() -> str:
+    return (_initial_prompt() or "Conversa em português do Brasil.")[:900]

@@ -9,6 +9,8 @@ services:
       VOSK_MODEL_PATH: /models/${VOSK_MODEL_NAME:-vosk-model-small-pt-0.3}
       # Motor de fala: 'whisper' entende bem mais em português; 'vosk' é leve e offline.
       STT_ENGINE: ${STT_ENGINE:-whisper}
+      GROQ_STT_MODEL: ${GROQ_STT_MODEL:-whisper-large-v3-turbo}
+      GROQ_STT_TIMEOUT_SECONDS: ${GROQ_STT_TIMEOUT_SECONDS:-20}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
       # Núcleos dedicados ao Whisper (0 = todos). Em máquina fraca use 2: o modelo de linguagem e o

@@ -515,7 +515,7 @@ async function handleWakeClip(blob) {
     const result = await response.json();
     const transcript = (result.text || "").trim();
     log(
-      `alcunha: transcrevi "${transcript}" (confiança ${result.confidence})`,
+      `alcunha: transcrevi "${transcript}"${Number.isFinite(result.confidence) ? ` (confiança ${result.confidence})` : ""}`,
       "| wake:", JSON.stringify(result.wake),
       `| ${Math.round(performance.now() - startedAt)} ms`
     );

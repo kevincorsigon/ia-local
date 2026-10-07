@@ -12,6 +12,10 @@ Assistente local em pt-BR: Ollama roda no host; backend, interface e serviços d
 
 ## Configurar
 
+### Reconhecimento de fala no NUC
+
+O motor é selecionado pelo `STT_ENGINE` no arquivo de ambiente usado pelo Compose. No NUC, edite `.env.nuc` e use `STT_ENGINE=groq` para enviar o áudio ao endpoint Speech-to-Text da Groq; use `STT_ENGINE=whisper` ou `STT_ENGINE=vosk` para manter o reconhecimento local. A chave `GROQ_API_KEY` já usada pelo LLM também autentica a transcrição e permanece no backend. Opcionalmente, configure `GROQ_STT_MODEL` (padrão `whisper-large-v3-turbo`) e `GROQ_STT_TIMEOUT_SECONDS` (padrão 20). Reinicie com `ASSISTANT_ENV_FILE=.env.nuc ./scripts/bootstrap.sh` para aplicar a mudança. No modo Groq, o áudio é enviado à nuvem para transcrição; a conversa e a síntese continuam usando os provedores configurados separadamente. A resposta não inclui confiança, pois esse provedor não fornece uma medida compatível com os motores locais.
+
 ```bash
 cp .env.example .env
 ```

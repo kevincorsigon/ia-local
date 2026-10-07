@@ -1166,6 +1166,8 @@ async def get_speech_ready() -> None:
     """Garante que o motor de fala responde antes de aceitar áudio."""
     if stt.available():
         return
+    if stt.engine() == "groq":
+        raise HTTPException(status_code=503, detail="STT_ENGINE=groq exige GROQ_API_KEY configurada no ambiente do backend.")
     raise HTTPException(
         status_code=503,
         detail="O reconhecimento de fala ainda não está pronto. Rode ./scripts/bootstrap.sh para instalar os recursos de voz.",
@@ -1212,14 +1214,41 @@ async def transcribe(request: Request, scan_wake: bool = False) -> dict[str, Any
         # Serializa o reconhecimento: a CPU alvo tem poucos núcleos e o modo de escuta
         # contínua pode enviar áudios seguidos enquanto outro cliente fala.
         async with STT_RECOGNITION_LOCK:
-            text, confidence = await asyncio.to_thread(stt.transcribe_pcm, pcm)
+            if stt.engine() == "groq":
+                wav_bytes = stt.pcm_to_wav(pcm)
+                async with httpx.AsyncClient(timeout=stt.GROQ_STT_TIMEOUT_SECONDS) as http:
+                    response = await http.post(
+                        "https://api.groq.com/openai/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {stt.GROQ_API_KEY}"},
+                        data={"model": stt.GROQ_STT_MODEL, "language": "pt", "response_format": "json", "prompt": stt.groq_prompt()},
+                        files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+                    )
+                    response.raise_for_status()
+                    text = str(response.json().get("text", "")).strip()
+                confidence = None
+            else:
+                text, confidence = await asyncio.to_thread(stt.transcribe_pcm, pcm)
     except stt.ModelUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="A transcrição na Groq excedeu o tempo limite. Tente novamente.") from exc
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {401, 403}:
+            raise HTTPException(status_code=503, detail="A Groq recusou a autenticação. Confira GROQ_API_KEY.") from exc
+        if exc.response.status_code == 429:
+            raise HTTPException(status_code=503, detail="Limite temporário da Groq atingido. Tente novamente em instantes.") from exc
+        logger.warning("Speech provider returned HTTP %s", exc.response.status_code)
+        raise HTTPException(status_code=502, detail="O serviço de transcrição está indisponível. Tente novamente.") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Speech provider request failed")
+        raise HTTPException(status_code=503, detail="Não consegui acessar o serviço de transcrição.") from exc
     except (ValueError, RuntimeError, OSError) as exc:
         logger.warning("Speech transcription failed")
         raise HTTPException(status_code=502, detail="Não consegui reconhecer essa fala. Tente novamente.") from exc
 
-    response: dict[str, Any] = {"text": text, "confidence": round(confidence, 3)}
+    response: dict[str, Any] = {"text": text}
+    if confidence is not None:
+        response["confidence"] = round(confidence, 3)
     if scan_wake:
         # O motor de fala não conhece as alcunhas ("Kunica" vira "cônica", "TVzinha" vira
         # "teve sozinha"), então a comparação usa as formas medidas em wake_variants e, na
