@@ -59,5 +59,7 @@ assistant:
       detail: "consultar câmbio de dólar/euro e preços de Bitcoin/Ethereum"
     - title: Entretenimento
       detail: "pedir piadas e curiosidades ao assistente"
+    - title: Música do Jellyfin
+      detail: "listar bibliotecas, artistas e gêneros; tocar uma faixa por nome ou artista, ou escolher uma aleatória"
     - title: Modo estudo e flashcards
       detail: "fazer quizzes por voz ou texto, responder uma pergunta de cada vez, receber correções e uma nota — ex.: “me faça 5 perguntas sobre fotossíntese”"

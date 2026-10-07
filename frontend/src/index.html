@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#070a08" />
     <title>Assistente local</title>
-    <link rel="stylesheet" href="/style.css?v=13" />
+    <link rel="stylesheet" href="/style.css?v=14" />
   </head>
   <body>
     <main class="app-shell">
@@ -21,6 +21,7 @@
             <span id="connection" class="connection" aria-live="polite">Conferindo núcleo…</span>
           </div>
           <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel">Terminal de chat</button>
+          <button id="music-toggle" class="control-button" type="button" aria-expanded="false" aria-controls="music-panel">Música</button>
           <button id="debug-toggle" class="control-button" type="button" aria-expanded="false" aria-controls="debug-panel">Debug áudio</button>
         </header>
 
@@ -71,6 +72,19 @@
             <button id="send" type="submit" aria-label="Enviar mensagem">Enviar <span aria-hidden="true">↗</span></button>
           </form>
         </section>
+        <section id="music-panel" class="music-panel" aria-label="Biblioteca de música" aria-hidden="true">
+          <div class="music-heading"><span>MÚSICA // JELLYFIN</span><button id="music-close" type="button" aria-label="Fechar música">×</button></div>
+          <div class="music-controls">
+            <p id="music-status">Verificando servidor de música…</p>
+            <select id="music-library" aria-label="Biblioteca de música"></select>
+            <div class="music-tabs"><button type="button" data-music-view="tracks">Faixas</button><button type="button" data-music-view="artists">Artistas</button><button type="button" data-music-view="genres">Gêneros</button></div>
+            <form id="music-search-form"><input id="music-search" type="search" placeholder="Buscar música ou artista" aria-label="Buscar música ou artista" /><button type="submit">Buscar</button></form>
+            <button id="music-random" type="button">Tocar uma música aleatória</button>
+          </div>
+          <div id="music-results" class="music-results" aria-live="polite"></div>
+          <div class="music-pagination"><button id="music-previous" type="button">Anterior</button><button id="music-next" type="button">Próximos</button></div>
+          <div class="music-player"><span id="music-now-playing">Nenhuma música tocando</span><div><button id="music-play-pause" type="button">Pausar</button><button id="music-next-track" type="button">Próxima</button><button id="music-stop" type="button">Parar</button></div></div>
+        </section>
         <section id="debug-panel" class="debug-panel" aria-label="Terminal de debug do áudio" aria-hidden="true">
           <div class="debug-heading">
             <span>DEBUG // ÁUDIO E MICROFONE</span>
@@ -90,6 +104,6 @@
         </section>
       </section>
     </main>
-    <script src="/app.js?v=15" defer></script>
+    <script src="/app.js?v=16" defer></script>
   </body>
 </html>

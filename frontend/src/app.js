@@ -19,6 +19,21 @@ const fullscreenToggle = document.querySelector("#fullscreen-toggle");
 const chatToggle = document.querySelector("#chat-toggle");
 const chatClose = document.querySelector("#chat-close");
 const chatPanel = document.querySelector("#chat-panel");
+const musicToggle = document.querySelector("#music-toggle");
+const musicClose = document.querySelector("#music-close");
+const musicPanel = document.querySelector("#music-panel");
+const musicStatus = document.querySelector("#music-status");
+const musicLibrary = document.querySelector("#music-library");
+const musicSearchForm = document.querySelector("#music-search-form");
+const musicSearch = document.querySelector("#music-search");
+const musicResults = document.querySelector("#music-results");
+const musicPrevious = document.querySelector("#music-previous");
+const musicNext = document.querySelector("#music-next");
+const musicRandom = document.querySelector("#music-random");
+const musicNowPlaying = document.querySelector("#music-now-playing");
+const musicPlayPause = document.querySelector("#music-play-pause");
+const musicNextTrack = document.querySelector("#music-next-track");
+const musicStop = document.querySelector("#music-stop");
 const terminal = document.querySelector(".terminal");
 const conversation = document.querySelector("#conversation");
 const emptyState = document.querySelector("#empty-state");
@@ -40,6 +55,17 @@ let recordingChunks = [];
 let recordingTimeout = null;
 let currentAudio = null;
 let currentAudioUrl = null;
+const musicAudio = new Audio();
+let musicQueue = [];
+let musicIndex = -1;
+let musicRandomMode = false;
+let musicView = "tracks";
+let musicStart = 0;
+let musicFilterArtist = "";
+let musicFilterGenre = "";
+let wakeWasEnabledForMusic = false;
+let musicPausedForMic = false;
+let musicPausedForSpeech = false;
 // Verdadeiro do envio da mensagem até o fim da fala da resposta. Enquanto isso o rosto fica em
 // “pensando/falando” e a escuta por alcunhas espera: era o loop de escuta que reescrevia o estado
 // para “listening” a cada 80 ms e fazia a boca parar de mexer no meio do áudio.
@@ -202,6 +228,7 @@ function resetMicLevel() {
 }
 
 function setChatOpen(open, { focus = true, remember = true } = {}) {
+  if (open) setMusicOpen(false);
   terminal.classList.toggle("chat-open", open);
   chatToggle.setAttribute("aria-expanded", String(open));
   chatPanel.setAttribute("aria-hidden", String(!open));
@@ -221,6 +248,226 @@ function setDebugOpen(open) {
 
 setChatOpen(false, { focus: false, remember: false });
 setDebugOpen(false);
+
+function setMusicOpen(open) {
+  terminal.classList.toggle("music-open", open);
+  musicToggle.setAttribute("aria-expanded", String(open));
+  musicPanel.setAttribute("aria-hidden", String(!open));
+  musicPanel.inert = !open;
+  if (open) {
+    setChatOpen(false, { focus: false });
+    void loadMusicCatalog();
+  }
+}
+
+async function musicRequest(path, params = {}) {
+  const url = new URL(path, window.location.origin);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== "" && value !== undefined) url.searchParams.set(key, String(value));
+  }
+  const response = await fetch(url);
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || `Jellyfin: HTTP ${response.status}`);
+  return result;
+}
+
+async function loadMusicCatalog() {
+  try {
+    const status = await musicRequest("/api/music/status");
+    musicStatus.textContent = status.reason;
+    if (!status.available) {
+      musicLibrary.replaceChildren();
+      musicResults.textContent = "Servidor de música indisponível.";
+      return;
+    }
+    const result = await musicRequest("/api/music/libraries");
+    const previous = musicLibrary.value;
+    musicLibrary.replaceChildren();
+    for (const library of result.items) {
+      const option = new Option(library.name, library.id);
+      musicLibrary.add(option);
+    }
+    if (result.items.some((item) => item.id === previous)) musicLibrary.value = previous;
+    if (!result.items.length) {
+      musicStatus.textContent = "Nenhuma biblioteca de música encontrada.";
+      return;
+    }
+    await loadMusicView();
+  } catch (error) {
+    musicStatus.textContent = error.message || "Não consegui acessar o Jellyfin.";
+  }
+}
+
+function musicItemButton(label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+async function loadMusicView() {
+  if (!musicLibrary.value) return;
+  musicResults.textContent = "Carregando…";
+  try {
+    const common = { library_id: musicLibrary.value, start: musicStart };
+    let items;
+    if (musicView === "artists") {
+      items = (await musicRequest("/api/music/artists", { ...common, search: musicSearch.value.trim() })).items;
+    } else if (musicView === "genres") {
+      items = (await musicRequest("/api/music/genres", { library_id: musicLibrary.value })).items;
+      if (musicSearch.value.trim()) items = items.filter((name) => name.toLocaleLowerCase("pt-BR").includes(musicSearch.value.trim().toLocaleLowerCase("pt-BR")));
+    } else {
+      items = (await musicRequest("/api/music/tracks", {
+        ...common, search: musicSearch.value.trim(), artist: musicFilterArtist, genre: musicFilterGenre,
+      })).items;
+    }
+    musicResults.replaceChildren();
+    if (!items.length) musicResults.textContent = "Nenhum resultado nesta biblioteca.";
+    for (const item of items) {
+      if (musicView === "artists") {
+        musicResults.append(musicItemButton(item.name, () => {
+          musicFilterArtist = item.name;
+          musicFilterGenre = "";
+          musicView = "tracks";
+          musicStart = 0;
+          musicSearch.value = "";
+          void loadMusicView();
+        }));
+      } else if (musicView === "genres") {
+        musicResults.append(musicItemButton(item, () => {
+          musicFilterGenre = item;
+          musicFilterArtist = "";
+          musicView = "tracks";
+          musicStart = 0;
+          musicSearch.value = "";
+          void loadMusicView();
+        }));
+      } else {
+        const label = `${item.name} — ${item.artists.join(", ") || "Artista desconhecido"}`;
+        musicResults.append(musicItemButton(label, () => void playMusicTrack(item, items)));
+      }
+    }
+    musicPrevious.disabled = musicStart === 0;
+    musicNext.disabled = musicView === "genres" || items.length < (musicView === "artists" ? 50 : 30);
+    musicStatus.textContent = musicView === "tracks" && (musicFilterArtist || musicFilterGenre)
+      ? `Filtrando: ${musicFilterArtist || musicFilterGenre}` : "Servidor de música disponível.";
+  } catch (error) {
+    musicResults.textContent = error.message || "Falha ao consultar músicas.";
+  }
+}
+
+async function playMusicTrack(track, queue = null, randomMode = false) {
+  if (!track?.id) return;
+  musicPausedForSpeech = false;
+  if (wakeEnabled) {
+    wakeWasEnabledForMusic = true;
+    await setWakeMode(false);
+  }
+  if (queue) {
+    musicQueue = queue;
+    musicIndex = queue.findIndex((item) => item.id === track.id);
+  } else {
+    musicQueue = [track];
+    musicIndex = 0;
+  }
+  musicRandomMode = randomMode;
+  musicAudio.pause();
+  musicAudio.src = `/api/music/stream/${encodeURIComponent(track.id)}`;
+  musicNowPlaying.textContent = `${track.name} — ${track.artists.join(", ") || "Artista desconhecido"}`;
+  musicPlayPause.textContent = "Pausar";
+  try {
+    await musicAudio.play();
+  } catch (error) {
+    musicStatus.textContent = "Não consegui iniciar o áudio. Clique em Tocar ou confira o Jellyfin.";
+    musicPlayPause.textContent = "Tocar";
+    logWarn("falha na reprodução de música:", error);
+  }
+}
+
+async function playRandomMusic() {
+  try {
+    const result = await musicRequest("/api/music/random", {
+      library_id: musicLibrary.value, artist: musicFilterArtist, genre: musicFilterGenre,
+    });
+    if (!result.track) {
+      musicStatus.textContent = "Não encontrei música para esta seleção.";
+      return;
+    }
+    await playMusicTrack(result.track, null, true);
+  } catch (error) {
+    musicStatus.textContent = error.message || "Servidor de música indisponível.";
+  }
+}
+
+async function nextMusicTrack() {
+  if (musicQueue[musicIndex + 1]) {
+    await playMusicTrack(musicQueue[musicIndex + 1], musicQueue, musicRandomMode);
+  } else {
+    await playRandomMusic();
+  }
+}
+
+function stopMusic() {
+  musicAudio.pause();
+  musicAudio.removeAttribute("src");
+  musicAudio.load();
+  musicQueue = [];
+  musicIndex = -1;
+  musicRandomMode = false;
+  musicNowPlaying.textContent = "Nenhuma música tocando";
+  musicPlayPause.textContent = "Tocar";
+  musicPausedForMic = false;
+  musicPausedForSpeech = false;
+  if (wakeWasEnabledForMusic) {
+    wakeWasEnabledForMusic = false;
+    void setWakeMode(true);
+  }
+}
+
+function resumeMusicAfterMic() {
+  if (!musicPausedForMic) return;
+  musicPausedForMic = false;
+  if (musicAudio.getAttribute("src")) void musicAudio.play().catch(() => {});
+}
+
+async function applyMusicAction(action) {
+  if (!action) return;
+  if (action.action === "play") await playMusicTrack(action.track);
+  else if (action.action === "pause") { musicAudio.pause(); musicPlayPause.textContent = "Tocar"; }
+  else if (action.action === "resume") { await musicAudio.play().catch(() => {}); musicPlayPause.textContent = "Pausar"; }
+  else if (action.action === "stop") stopMusic();
+  else if (action.action === "next") await nextMusicTrack();
+  else if (action.action === "browse") { musicView = action.view || "tracks"; setMusicOpen(true); }
+}
+
+musicAudio.addEventListener("ended", () => void nextMusicTrack());
+musicAudio.addEventListener("error", () => {
+  if (musicAudio.getAttribute("src")) musicStatus.textContent = "Falha ao reproduzir. Confira a conexão com o Jellyfin.";
+});
+musicToggle.addEventListener("click", () => setMusicOpen(!terminal.classList.contains("music-open")));
+musicClose.addEventListener("click", () => setMusicOpen(false));
+musicLibrary.addEventListener("change", () => { musicStart = 0; musicFilterArtist = ""; musicFilterGenre = ""; void loadMusicView(); });
+musicSearchForm.addEventListener("submit", (event) => { event.preventDefault(); musicStart = 0; void loadMusicView(); });
+musicPanel.querySelectorAll("[data-music-view]").forEach((button) => button.addEventListener("click", () => {
+  musicView = button.dataset.musicView;
+  musicStart = 0;
+  musicFilterArtist = "";
+  musicFilterGenre = "";
+  musicSearch.value = "";
+  void loadMusicView();
+}));
+musicPrevious.addEventListener("click", () => { musicStart = Math.max(0, musicStart - (musicView === "artists" ? 50 : 30)); void loadMusicView(); });
+musicNext.addEventListener("click", () => { musicStart += musicView === "artists" ? 50 : 30; void loadMusicView(); });
+musicRandom.addEventListener("click", () => void playRandomMusic());
+musicNextTrack.addEventListener("click", () => void nextMusicTrack());
+musicStop.addEventListener("click", stopMusic);
+musicPlayPause.addEventListener("click", () => {
+  if (!musicAudio.getAttribute("src")) return;
+  if (musicAudio.paused) void musicAudio.play().then(() => { musicPlayPause.textContent = "Pausar"; }).catch(() => {});
+  else { musicAudio.pause(); musicPlayPause.textContent = "Tocar"; }
+});
+setMusicOpen(false);
 
 function setState(state, label) {
   face.className = `face state-${state}`;
@@ -649,6 +896,11 @@ function finishPlayback() {
   // A resposta terminou: libera o tempo cheio de conversa antes de exigir a alcunha de novo.
   if (conversationActive()) conversationUntil = performance.now() + conversationSeconds * 1000;
   showReadyState();
+  resumeMusicAfterMic();
+  if (musicPausedForSpeech) {
+    musicPausedForSpeech = false;
+    if (musicAudio.getAttribute("src")) void musicAudio.play().catch(() => {});
+  }
 }
 
 // Kokoro sintetiza em CPU: um trecho de até 220 caracteres leva ~1,3 s para virar áudio. Para a
@@ -731,6 +983,10 @@ async function warmUpSpeech() {
 async function speakAnswer(text) {
   const startedAt = performance.now();
   try {
+    if (musicAudio.getAttribute("src") && !musicAudio.paused) {
+      musicAudio.pause();
+      musicPausedForSpeech = true;
+    }
     if (currentAudio) {
       currentAudio.pause();
       finishPlayback();
@@ -809,6 +1065,7 @@ async function transcribeAndSend(blob) {
   if (blob.size < 3000) {
     logWarn("transcrição abortada: apenas", blob.size, "bytes de áudio");
     setState("idle", "Gravei quase nada. Confira o microfone em chrome://settings/content/microphone e permita o acesso.");
+    resumeMusicAfterMic();
     return;
   }
   setState("transcribing", "Estou entendendo sua fala…");
@@ -825,12 +1082,15 @@ async function transcribeAndSend(blob) {
     const text = (result.text || "").trim();
     if (!text) {
       setState("idle", "Não reconheci palavras. Tente falar um pouco mais perto do microfone.");
+      resumeMusicAfterMic();
       return;
     }
     // Envio automático: basta parar de falar, sem clicar em "Enviar".
-    void sendMessage(text);
+    await sendMessage(text);
+    if (!assistantBusy) resumeMusicAfterMic();
   } catch (error) {
     setState("error", error.message || "Falha ao transcrever o áudio.");
+    resumeMusicAfterMic();
   }
 }
 
@@ -843,8 +1103,13 @@ recordButton.addEventListener("click", async () => {
     return;
   }
   log("botão Falar: iniciando");
+  if (musicAudio.getAttribute("src") && !musicAudio.paused) {
+    musicAudio.pause();
+    musicPausedForMic = true;
+  }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     setState("error", "Este navegador não oferece gravação de áudio.");
+    resumeMusicAfterMic();
     return;
   }
   try {
@@ -875,6 +1140,7 @@ recordButton.addEventListener("click", async () => {
     recordButton.setAttribute("aria-pressed", "false");
     recordLabel.textContent = "Falar";
     setState("error", "Não consegui acessar o microfone. Confira a permissão do navegador.");
+    resumeMusicAfterMic();
   }
 });
 
@@ -1053,6 +1319,8 @@ async function sendMessage(rawMessage) {
       localStorage.setItem(sessionKey, sessionId);
     }
     pending.textContent = result.answer;
+    if (result.music) await applyMusicAction(result.music);
+    if (result.music && ["play", "pause", "stop", "next"].includes(result.music.action)) musicPausedForMic = false;
     if (result.sources?.length) {
       const sources = document.createElement("div");
       sources.className = "sources";

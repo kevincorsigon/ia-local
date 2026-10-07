@@ -16,6 +16,14 @@ Assistente local em pt-BR: Ollama roda no host; backend, interface e serviços d
 
 O motor é selecionado pelo `STT_ENGINE` no arquivo de ambiente usado pelo Compose. No NUC, edite `.env.nuc` e use `STT_ENGINE=groq` para enviar o áudio ao endpoint Speech-to-Text da Groq; use `STT_ENGINE=whisper` ou `STT_ENGINE=vosk` para manter o reconhecimento local. A chave `GROQ_API_KEY` já usada pelo LLM também autentica a transcrição e permanece no backend. Opcionalmente, configure `GROQ_STT_MODEL` (padrão `whisper-large-v3-turbo`) e `GROQ_STT_TIMEOUT_SECONDS` (padrão 20). Reinicie com `ASSISTANT_ENV_FILE=.env.nuc ./scripts/bootstrap.sh` para aplicar a mudança. No modo Groq, o áudio é enviado à nuvem para transcrição; a conversa e a síntese continuam usando os provedores configurados separadamente. A resposta não inclui confiança, pois esse provedor não fornece uma medida compatível com os motores locais.
 
+### Música do Jellyfin
+
+A Kunica pode navegar pelas bibliotecas do tipo música no botão **Música** e tocar faixas no navegador em que a interface está aberta. Também aceita pedidos como “listar as bibliotecas”, “lista algumas músicas”, “liste os artistas”, “liste os gêneros”, “toca uma música aí”, “toca música do gênero rock”, “toca a música X do artista Y”, “pause a música”, “continue a música”, “próxima música” e “servidor de música está disponível?”. A busca e a reprodução usam o Jellyfin já existente; filmes e séries não entram nas consultas.
+
+No `.env.nuc`, `JELLYFIN_URL=http://192.168.3.130:8096` aponta para o servidor informado. A conta `JELLYFIN_USERNAME`/`JELLYFIN_PASSWORD` configurada nesse arquivo autentica a Kunica e limita a navegação às bibliotecas visíveis para ela. Também é possível usar `JELLYFIN_API_KEY` no lugar da conta; uma chave de API tem acesso amplo no servidor e não deve ser compartilhada. A senha ou chave é enviada somente pelo backend, nunca pelo navegador. Depois rode `ASSISTANT_ENV_FILE=.env.nuc ./scripts/bootstrap.sh` para recriar o backend com essas variáveis. Para confirmar a conexão, pergunte “servidor de música está disponível?” ou abra o painel Música. Quando o PC do Jellyfin estiver desligado, a Kunica avisa em voz nos pedidos de música.
+
+Durante a reprodução, a escuta contínua por alcunhas é pausada para a música não acionar o microfone. Use o botão **Falar** para comandos de voz durante a música; ao parar a reprodução, a escuta contínua volta ao estado anterior. O áudio sai no dispositivo que abriu a interface da Kunica. Se o navegador não suportar um formato de arquivo da biblioteca, o painel mostrará falha de reprodução.
+
 ```bash
 cp .env.example .env
 ```

@@ -16,10 +16,10 @@ import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
 from app.llm_factory import get_llm_provider
-from app import memory, stt, wake
+from app import jellyfin_music, memory, stt, wake
 from app.tools import (
     ToolUnavailable,
     extract_memory_text,
@@ -202,6 +202,7 @@ _TOOL_HELP_ALIASES = {
     "Cotações": ("cotação", "dólar", "euro", "bitcoin"),
     "Entretenimento": ("piada", "curiosidade"),
     "Modo estudo e flashcards": ("modo estudo", "flashcard", "quiz"),
+    "Música do Jellyfin": ("música", "musica", "jellyfin", "artista", "gênero"),
 }
 
 
@@ -265,6 +266,7 @@ class ChatResponse(BaseModel):
     sources: list[dict[str, str]] = Field(default_factory=list)
     should_speak: bool = True
     session_id: str | None = None
+    music: dict[str, Any] | None = None
 
 
 class MemoryRequest(BaseModel):
@@ -739,6 +741,21 @@ async def chat(request: ChatRequest) -> ChatResponse:
     session = SESSIONS.setdefault(session_id, {"messages": [], "updated_at": now})
     history: list[dict[str, str]] = session["messages"]
 
+    music_command = jellyfin_music.parse_command(message)
+    if music_command:
+        music_error = False
+        try:
+            answer, music_action = await jellyfin_music.handle_command(music_command)
+        except jellyfin_music.MusicUnavailable as exc:
+            answer, music_action = str(exc), None
+            music_error = True
+        append_turn(session, history, message, answer)
+        return ChatResponse(
+            answer=answer, used_tools=["jellyfin_music"], session_id=session_id,
+            music=music_action,
+            should_speak=music_error or music_command["kind"] in {"status", "libraries", "artists", "genres", "tracks"},
+        )
+
     # Sinalizações pendentes do turno anterior: o comando “pesquisa na internet” sozinho e o
     # pedido de cidade do clima. A próxima fala é interpretada como o dado que faltou.
     awaiting_search = bool(session.pop("awaiting_search", False))
@@ -1172,6 +1189,87 @@ async def get_speech_ready() -> None:
         status_code=503,
         detail="O reconhecimento de fala ainda não está pronto. Rode ./scripts/bootstrap.sh para instalar os recursos de voz.",
     )
+
+
+@app.get("/api/music/status")
+async def music_status() -> dict[str, Any]:
+    return await jellyfin_music.status()
+
+
+@app.get("/api/music/libraries")
+async def music_libraries() -> dict[str, Any]:
+    try:
+        return {"items": await jellyfin_music.libraries()}
+    except jellyfin_music.MusicUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/music/artists")
+async def music_artists(library_id: str = "", search: str = "", start: int = 0) -> dict[str, Any]:
+    try:
+        return {"items": await jellyfin_music.artists(library_id, search, start=start)}
+    except jellyfin_music.MusicUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/music/genres")
+async def music_genres(library_id: str = "") -> dict[str, Any]:
+    try:
+        return {"items": await jellyfin_music.genres(library_id)}
+    except jellyfin_music.MusicUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/music/tracks")
+async def music_tracks(library_id: str = "", search: str = "", artist: str = "", genre: str = "",
+                       start: int = 0) -> dict[str, Any]:
+    try:
+        return await jellyfin_music.tracks(library_id, search, artist, genre, start=start)
+    except jellyfin_music.MusicUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/music/random")
+async def music_random(library_id: str = "", artist: str = "", genre: str = "") -> dict[str, Any]:
+    try:
+        return {"track": await jellyfin_music.random_track(library_id, artist, genre)}
+    except jellyfin_music.MusicUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/music/stream/{track_id}")
+async def music_stream(track_id: str, request: Request) -> StreamingResponse:
+    if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", track_id):
+        raise HTTPException(status_code=404, detail="Faixa não encontrada.")
+    headers = await jellyfin_music._headers()
+    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=30, write=10, pool=5))
+    if request.headers.get("range"):
+        headers["Range"] = request.headers["range"]
+    try:
+        upstream_request = client.build_request(
+            "GET", f"{jellyfin_music.URL}/Audio/{track_id}/stream",
+            headers=headers, params={"static": "true"},
+        )
+        upstream = await client.send(upstream_request, stream=True)
+        if upstream.status_code not in {200, 206}:
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=502, detail="O Jellyfin não conseguiu reproduzir esta faixa.")
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=503, detail="Não consegui abrir o áudio no Jellyfin.") from exc
+
+    async def audio_chunks():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    forward = {name: value for name, value in upstream.headers.items()
+               if name.lower() in {"content-length", "content-range", "accept-ranges", "content-type"}}
+    return StreamingResponse(audio_chunks(), status_code=upstream.status_code, headers=forward)
 
 
 @app.post("/api/transcribe")
