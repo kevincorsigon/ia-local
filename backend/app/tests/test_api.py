@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import wave
 from urllib.parse import parse_qs, urlparse
 
@@ -50,6 +51,15 @@ FORECAST_REPLY = {
 
 def tags_ok(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json=OLLAMA_TAGS)
+
+
+def search_and_answer(query: str, answer: str):
+    """Simula separadamente a reformulação da busca e a resposta após receber fontes."""
+    def responder(request: httpx.Request) -> httpx.Response:
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        content = query if prompt.startswith("Crie uma consulta curta") else answer
+        return ollama_reply(content)(request)
+    return responder
 
 
 def test_health_reporta_ollama_e_modelo(client, external) -> None:
@@ -611,7 +621,7 @@ def test_chat_sem_chave_brave_avisa_em_vez_de_inventar(client, external, monkeyp
 
     payload = client.post("/api/chat", json={"message": "Pesquise notícias de hoje sobre o mercado."}).json()
 
-    assert payload["used_tools"] == ["web_search"]
+    assert payload["used_tools"] == ["news"]
     assert "precisa ser configurada" in payload["answer"]
     assert calls.unmatched == []
     assert calls.payloads(CHAT_ROUTE) == []
@@ -639,7 +649,8 @@ def test_chat_de_pesquisa_devolve_fontes_e_nao_vaza_chave(client, external, monk
     response = client.post("/api/chat", json={"message": "Pesquise notícias de hoje sobre o mercado."})
 
     payload = response.json()
-    assert payload["used_tools"] == ["web_search"]
+    assert payload["used_tools"] == ["news"]
+    assert "mercado" in parse_qs(urlparse(calls.urls(BRAVE_ROUTE)[0]).query)["q"][0]
     assert payload["sources"] == [{"title": "Manchete A", "url": "https://exemplo.com/a"}]
     assert "chave-super-secreta" not in response.text
     assert calls.unmatched == []
@@ -660,7 +671,7 @@ def test_chat_de_pesquisa_remove_o_comando_da_consulta(client, external, monkeyp
                     }
                 },
             ),
-            CHAT_ROUTE: ollama_reply("A capital é Camberra."),
+            CHAT_ROUTE: search_and_answer("qual a capital da Austrália", "A capital é Camberra."),
         }
     )
 
@@ -668,6 +679,8 @@ def test_chat_de_pesquisa_remove_o_comando_da_consulta(client, external, monkeyp
 
     consulta = parse_qs(urlparse(calls.urls(BRAVE_ROUTE)[0]).query)["q"][0]
     assert consulta == "qual a capital da Austrália"
+    reformulation = calls.payloads(CHAT_ROUTE)[0]["messages"][-1]["content"]
+    assert "Consulta pendente ou extraída: qual a capital da Austrália\n" in reformulation
 
 
 def test_chat_de_pesquisa_usa_a_proxima_fala_como_consulta(client, external, monkeypatch) -> None:
@@ -685,7 +698,7 @@ def test_chat_de_pesquisa_usa_a_proxima_fala_como_consulta(client, external, mon
                     }
                 },
             ),
-            CHAT_ROUTE: ollama_reply("A capital é Camberra."),
+            CHAT_ROUTE: search_and_answer("qual a capital da Austrália", "A capital é Camberra."),
         }
     )
 
@@ -700,6 +713,8 @@ def test_chat_de_pesquisa_usa_a_proxima_fala_como_consulta(client, external, mon
     assert resposta["used_tools"] == ["web_search"]
     assert calls.unmatched == []
     assert parse_qs(urlparse(calls.urls(BRAVE_ROUTE)[0]).query)["q"][0] == "qual a capital da Austrália"
+    reformulation = calls.payloads(CHAT_ROUTE)[0]["messages"][-1]["content"]
+    assert "Consulta pendente ou extraída: qual a capital da Austrália\n" in reformulation
 
 
 def test_memoria_orienta_a_ferramenta_de_busca(client, external, monkeypatch) -> None:
@@ -778,7 +793,7 @@ def test_chat_de_esporte_usa_pesquisa_esportiva(client, external, monkeypatch) -
                 200,
                 json={"web": {"results": [{"title": "Próximo jogo", "url": "https://exemplo.com/jogo", "description": "Sábado."}]}},
             ),
-            CHAT_ROUTE: ollama_reply("O próximo jogo é sábado."),
+            CHAT_ROUTE: search_and_answer("próximo jogo do Corinthians", "O próximo jogo é sábado."),
         }
     )
 
@@ -787,6 +802,7 @@ def test_chat_de_esporte_usa_pesquisa_esportiva(client, external, monkeypatch) -
     assert payload["used_tools"] == ["sports"]
     assert payload["sources"][0]["url"] == "https://exemplo.com/jogo"
     assert "Corinthians" in calls.urls(BRAVE_ROUTE)[0]
+    assert "Quando é o próximo jogo do Corinthians?" in calls.payloads(CHAT_ROUTE)[0]["messages"][-1]["content"]
 
 
 def test_chat_reporta_erro_do_ollama(client, external) -> None:

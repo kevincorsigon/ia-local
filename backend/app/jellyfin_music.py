@@ -25,6 +25,15 @@ class MusicUnavailable(Exception):
     pass
 
 
+class MusicAmbiguous(MusicUnavailable):
+    pass
+
+
+# Abreviações que não são pesquisáveis como substrings no catálogo. A expansão
+# só é usada para consulta: a reprodução ainda exige um artista real no Jellyfin.
+ARTIST_ALIASES = {"a7x": "Avenged Sevenfold"}
+
+
 def configured() -> bool:
     return bool(URL and (API_KEY or (USERNAME and PASSWORD)))
 
@@ -168,6 +177,47 @@ async def genres(library_id: str = "") -> list[str]:
     return [str(x.get("Name")) for x in data.get("Items", []) if x.get("Name")]
 
 
+def _artist_key(name: str) -> str:
+    return " ".join(re.findall(r"\w+", _fold(name)))
+
+
+def _select_artist(matches: list[dict[str, str]], query: str) -> dict[str, str] | None:
+    key = _artist_key(query)
+    if not key:
+        return None
+    exact = [item for item in matches if _artist_key(item["name"]) == key]
+    # Nomes parciais precisam corresponder a palavras inteiras, não a um trecho
+    # arbitrário ("Avenged" serve; "Avenged76" não vira um artista por semelhança).
+    candidates = exact or [item for item in matches
+                           if f" {key} " in f" {_artist_key(item['name'])} "]
+    unique = {_artist_key(item["name"]): item for item in candidates}
+    if len(unique) > 1:
+        names = ", ".join(sorted(item["name"] for item in unique.values())[:5])
+        raise MusicAmbiguous(f"Encontrei mais de um artista para {query}: {names}. Qual você quer ouvir?")
+    return next(iter(unique.values()), None)
+
+
+async def resolve_artist(query: str, hint: str = "", library_id: str = "") -> dict[str, str] | None:
+    """Prioriza o nome dito pelo usuário; a sugestão da IA só entra se ele não resolver."""
+    library_ids = [library_id] if library_id else [item["id"] for item in await libraries()]
+    searches = list(dict.fromkeys(ARTIST_ALIASES.get(_artist_key(term), term)
+                                 for term in (query, hint) if term.strip()))
+    for search in searches:
+        matches = []
+        for parent in library_ids:
+            start = 0
+            while True:
+                page = await artists(parent, search, 100, start)
+                matches.extend(page)
+                start += len(page)
+                if len(page) < 100:
+                    break
+        selected = _select_artist(matches, search)
+        if selected:
+            return selected
+    return None
+
+
 async def tracks(
     library_id: str = "", search: str = "", artist: str = "", genre: str = "",
     limit: int = 30, start: int = 0,
@@ -186,9 +236,7 @@ async def tracks(
     if genre:
         params["Genres"] = genre
     if artist:
-        matches = await artists(parent, artist, 20)
-        exact = next((x for x in matches if _fold(x["name"]) == _fold(artist)), None)
-        selected = exact or (matches[0] if matches else None)
+        selected = await resolve_artist(artist, library_id=parent)
         if not selected:
             return {"items": [], "total": 0}
         params["ArtistIds"] = selected["id"]
@@ -197,16 +245,28 @@ async def tracks(
             "total": int(data.get("TotalRecordCount") or 0)}
 
 
-async def random_track(library_id: str = "", artist: str = "", genre: str = "") -> dict[str, Any] | None:
+async def random_track(
+    library_id: str = "", artist: str = "", genre: str = "", exclude_track_id: str = "",
+) -> dict[str, Any] | None:
     choices = [library_id] if library_id else [x["id"] for x in await libraries()]
     random.shuffle(choices)
     for parent in choices:
         first = await tracks(parent, artist=artist, genre=genre, limit=1)
         total = first["total"]
         if total:
-            chosen = await tracks(parent, artist=artist, genre=genre, limit=1, start=random.randrange(total))
-            if chosen["items"]:
-                return chosen["items"][0]
+            index = random.randrange(total)
+            chosen = await tracks(parent, artist=artist, genre=genre, limit=1, start=index)
+            if not chosen["items"]:
+                continue
+            item = chosen["items"][0]
+            if item["id"] == exclude_track_id:
+                if total == 1:
+                    continue
+                alternate = await tracks(parent, artist=artist, genre=genre, limit=1, start=(index + 1) % total)
+                if not alternate["items"] or alternate["items"][0]["id"] == exclude_track_id:
+                    continue
+                item = alternate["items"][0]
+            return item
     return None
 
 
@@ -219,6 +279,14 @@ def _spoken(value: str) -> str:
     folded = _fold(value)
     folded = re.sub(r"\b(?:msuca|msuica|msucia|muscia|muisca)\b", "musica", folded)
     return re.sub(r"\bdisponiblw\b", "disponivel", folded)
+
+
+def is_next_request(message: str) -> bool:
+    """Pedidos curtos que só são musicais enquanto há uma faixa tocando."""
+    return bool(re.fullmatch(
+        r"(?:outra|outro|mais uma|mais um|troca|troque|muda|mude)"
+        r"(?:\s+(?:musica|faixa|som))?[.!?]*", _spoken(message.strip()),
+    ))
 
 
 def parse_command(message: str) -> dict[str, str] | None:
@@ -246,15 +314,12 @@ def parse_command(message: str) -> dict[str, str] | None:
         return {"kind": "control", "action": "resume"}
     if re.fullmatch(r"(?:um\s+)?som\s+na\s+caixa[.!?]*", folded):
         return {"kind": "random"}
-    play = re.match(r"^(?:toque|toca|tocar|coloque|bota|reproduza|reproduzir|mete)\s+(.+?)[.!?]*$", text, re.I)
+    play = re.match(r"^(?:toque|toca|tocar|coloca|coloque|bota|reproduza|reproduzir|mete|quero\s+(?:ouvir|escutar))\s+(.+?)[.!?]*$", text, re.I)
     if not play:
         return None
     target = play.group(1).strip().rstrip(".!?")
     target = re.sub(r"\s+(?:pra|para)\s+(?:mim|n[oó]s|a gente)$", "", target, flags=re.I).strip()
     plain = _spoken(target)
-    quoted_artist = re.search(r"[\"“”'](.+?)[\"“”']", target)
-    if quoted_artist:
-        return {"kind": "random", "artist": quoted_artist.group(1).strip()}
     genre = re.search(r"(?:musicas?\s+)?(?:d[eo]\s+)?genero\s+(.+)$", plain)
     if genre:
         return {"kind": "random", "genre": target[genre.start(1):].strip()}
@@ -283,7 +348,8 @@ def parse_command(message: str) -> dict[str, str] | None:
         return {"kind": "named", "search": target[named.start(1):named.end(1)].strip(),
                 "artist": target[named.start(2):named.end(2)].strip()}
     prefix = re.match(rf"^(?:a\s+)?{music_word}\s+", original)
-    return {"kind": "named", "search": target[prefix.end():] if prefix else target}
+    return {"kind": "named" if prefix else "search",
+            "search": (target[prefix.end():] if prefix else target).strip().strip('\"“”\'')}
 
 
 def could_be_music_request(message: str) -> bool:
@@ -322,6 +388,50 @@ async def _named_track(search: str, artist: str = "") -> dict[str, Any] | None:
     return best if SequenceMatcher(None, _fold(search), _fold(best["name"])).ratio() >= 0.72 else None
 
 
+async def _search_track(search: str) -> dict[str, Any] | None:
+    """Fallback sem IA: resolve artistas e abreviações antes de buscar títulos."""
+    selected = await resolve_artist(search)
+    if selected:
+        item = await random_track(artist=selected["name"])
+        if item:
+            return item
+    return await _named_track(search)
+
+
+async def _album_tracks(album: str, artist: str = "") -> list[dict[str, Any]]:
+    """Resolve o álbum dentro das bibliotecas musicais e prepara até 100 faixas."""
+    user_id = await _user_id()
+    for library in await libraries():
+        params: dict[str, Any] = {
+            "ParentId": library["id"], "IncludeItemTypes": "MusicAlbum",
+            "Recursive": "true", "SearchTerm": album, "Limit": 100,
+        }
+        if user_id:
+            params["UserId"] = user_id
+        if artist:
+            selected_artist = await resolve_artist(artist, library_id=library["id"])
+            if not selected_artist:
+                continue
+            params["ArtistIds"] = selected_artist["id"]
+        data = await _get("/Items", params)
+        selected = next((item for item in data.get("Items", [])
+                         if item.get("Id") and item.get("Type") == "MusicAlbum"
+                         and _fold(str(item.get("Name") or "")) == _fold(album)), None)
+        if not selected:
+            continue
+        params = {
+            "ParentId": selected["Id"], "IncludeItemTypes": "Audio", "Recursive": "true",
+            "SortBy": "ParentIndexNumber,IndexNumber,SortName", "Limit": 100,
+        }
+        if user_id:
+            params["UserId"] = user_id
+        data = await _get("/Items", params)
+        items = [_item(item) for item in data.get("Items", []) if item.get("Type") == "Audio"]
+        if items:
+            return items
+    return []
+
+
 async def handle_command(command: dict[str, str]) -> tuple[str, dict[str, Any] | None]:
     kind = command["kind"]
     if kind == "status":
@@ -353,17 +463,41 @@ async def handle_command(command: dict[str, str]) -> tuple[str, dict[str, Any] |
             return "Não encontrei músicas nas bibliotecas do Jellyfin.", None
         names = [f"{item['name']}, de {', '.join(item['artists']) or 'artista desconhecido'}" for item in found]
         return "Algumas músicas da sua biblioteca: " + "; ".join(names) + ".", {"action": "browse", "view": "tracks"}
-    if kind == "random":
+    if command.get("artist"):
+        original = command.get("artist_query") or command["artist"]
+        selected = await resolve_artist(original, hint=command["artist"])
+        if not selected:
+            return f"Não encontrei músicas de {original} no Jellyfin.", None
+        command = {**command, "artist": selected["name"]}
+    queue = None
+    if kind == "album":
+        queue = await _album_tracks(command["album"], command.get("artist", ""))
+        item = queue[0] if queue else None
+    elif kind == "search":
+        item = await _search_track(command["search"])
+    elif kind in {"random", "next_track"}:
         genre = command.get("genre", "")
         if genre:
             available_genres = []
             for library in await libraries():
                 available_genres.extend(await genres(library["id"]))
             genre = next((name for name in available_genres if _fold(name) == _fold(genre)), genre)
-        item = await random_track(artist=command.get("artist", ""), genre=genre)
+        item = await random_track(
+            artist=command.get("artist", ""), genre=genre,
+            exclude_track_id=command.get("exclude_track_id", "") if kind == "next_track" else "",
+        )
     else:
         item = await _named_track(command.get("search", ""), command.get("artist", ""))
     if not item:
+        if kind == "next_track":
+            return "Não encontrei outra música para tocar nesta seleção.", None
+        if kind == "album":
+            return f"Não encontrei faixas do álbum {command['album']} no Jellyfin.", None
+        if command.get("artist") and kind == "random":
+            return f"Não encontrei músicas de {command['artist']} no Jellyfin.", None
         return "Não encontrei uma música correspondente no Jellyfin.", None
     artist_text = ", ".join(item["artists"]) or "artista desconhecido"
-    return f"Tocando {item['name']}, de {artist_text}.", {"action": "play", "track": item}
+    action = {"action": "play", "track": item}
+    if queue:
+        action["queue"] = queue
+    return f"Tocando {item['name']}, de {artist_text}.", action

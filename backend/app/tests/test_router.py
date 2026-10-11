@@ -49,33 +49,32 @@ def test_perguntas_de_esporte_vao_para_sports(message: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "message",
+    ("message", "expected"),
     [
-        "Pesquise notícias de hoje sobre inteligência artificial",
-        "Procure o preço atual do dólar",
-        "Qual é a cotação do bitcoin agora?",
-        "Buscar lançamento do novo celular",
+        ("Pesquise notícias de hoje sobre inteligência artificial", "news"),
+        ("Procure o preço atual do dólar", "web_search"),
+        ("Qual é a cotação do bitcoin agora?", "quote"),
+        ("Buscar lançamento do novo celular", "web_search"),
         # Comando de voz: “pesquisa na internet” / “pesquisa no google”.
-        "Pesquise no Google quem ganhou o jogo de ontem",
-        "Google a cotação do euro hoje",
+        ("Pesquise no Google quem ganhou o jogo de ontem", "web_search"),
+        ("Google a cotação do euro hoje", "quote"),
     ],
 )
-def test_perguntas_de_dado_atual_vao_para_web_search(message: str) -> None:
-    assert route_question(message) == "web_search"
+def test_dados_atuais_usam_ferramenta_especializada_ou_busca(message: str, expected: str) -> None:
+    assert route_question(message) == expected
 
 
 @pytest.mark.parametrize(
-    "message",
+    ("message", "expected"),
     [
-        "Explique em uma frase o que é fotossíntese",
-        "Me conte uma piada",
-        "Quanto é 17 vezes 23?",
-        "Escreva um poema curto sobre o mar",
+        ("Explique em uma frase o que é fotossíntese", None),
+        ("Me conte uma piada", "fun"),
+        ("Quanto é 17 vezes 23?", "calculator"),
+        ("Escreva um poema curto sobre o mar", None),
     ],
 )
-def test_perguntas_gerais_nao_acionam_ferramenta(message: str) -> None:
-    """Sem ferramenta a resposta é gerada só pelo modelo local, sem internet."""
-    assert route_question(message) is None
+def test_conversa_calculo_e_entretenimento_tem_rotas_distintas(message: str, expected: str | None) -> None:
+    assert route_question(message) == expected
 
 
 @pytest.mark.parametrize(

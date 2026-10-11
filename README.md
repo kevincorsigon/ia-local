@@ -18,11 +18,39 @@ O motor é selecionado pelo `STT_ENGINE` no arquivo de ambiente usado pelo Compo
 
 ### Música do Jellyfin
 
+Pedidos de reprodução passam pelo modelo de IA configurado em `LLM_MODE` antes de consultar
+o Jellyfin. O prompt em `backend/app/music_prompt.py` diferencia artista, faixa, álbum e gênero:
+“toca Nirvana” busca músicas do artista Nirvana; “toca Smells Like Teen Spirit do Nirvana” busca
+a faixa; “toca o álbum Nevermind do Nirvana” prepara uma fila de até 100 faixas em ordem de disco
+e número da faixa. A IA interpreta o pedido; os IDs e as faixas reproduzidas vêm do catálogo.
+Se faltar informação, ela faz uma pergunta e usa a próxima resposta no contexto. Se o modelo
+falhar ou retornar JSON inválido, os comandos locais continuam funcionando e nomes sem tipo
+explícito são procurados primeiro entre artistas, depois entre títulos. O nome original do
+pedido tem prioridade sobre a sugestão da IA: “toca a7x” resolve a abreviação Avenged Sevenfold;
+“toca avenged” e “toca sevenfold” procuram nomes parciais no catálogo. Um nome completo exato
+tem prioridade; se o trecho corresponder a artistas diferentes, a Kunica pergunta qual deles.
+A sugestão da IA só é tentada quando o nome original não encontra artista, e precisa existir
+no Jellyfin. Outras abreviações podem ser adicionadas em `ARTIST_ALIASES` no módulo de música.
+Pausar, retomar, parar, avançar e listas reconhecidas continuam imediatos, sem esperar a IA.
+Enquanto há música na sessão, “outra”, “mais uma” e “próxima música” escolhem uma faixa
+diferente da atual, mantendo o artista ou gênero pedido. O backend devolve o título
+real da nova faixa e uma ação de reprodução; se não houver outra opção, avisa sem
+afirmar que trocou. Em álbuns, “outra” avança a fila já enviada ao player.
+
 A Kunica pode navegar pelas bibliotecas do tipo música no botão **Música** e tocar faixas no navegador em que a interface está aberta. Também aceita pedidos como “listar as bibliotecas”, “lista algumas músicas”, “liste os artistas”, “liste os gêneros”, “toca uma música aleatória”, “toca uma música pra mim”, “toca uma pra mim”, “mete um som na caixa”, “som na caixa”, “toca um ‘Alice in Chains’ pra mim”, “toca um ‘Alice in Chains’ pra nós”, “toca música do gênero rock”, “toca a música X do artista Y”, “pause a música”, “continue a música”, “próxima música” e “servidor de música está disponível?”. A busca e a reprodução usam o Jellyfin já existente; filmes e séries não entram nas consultas.
 
 No `.env.nuc`, `JELLYFIN_URL=http://192.168.3.130:8096` aponta para o servidor informado. A conta `JELLYFIN_USERNAME`/`JELLYFIN_PASSWORD` configurada nesse arquivo autentica a Kunica e limita a navegação às bibliotecas visíveis para ela. Também é possível usar `JELLYFIN_API_KEY` no lugar da conta; uma chave de API tem acesso amplo no servidor e não deve ser compartilhada. A senha ou chave é enviada somente pelo backend, nunca pelo navegador. Depois rode `ASSISTANT_ENV_FILE=.env.nuc ./scripts/bootstrap.sh` para recriar o backend com essas variáveis. Para confirmar a conexão, pergunte “servidor de música está disponível?” ou abra o painel Música. Quando o PC do Jellyfin estiver desligado, a Kunica avisa em voz nos pedidos de música.
 
-Durante a reprodução, a escuta contínua por alcunhas é pausada para a música não acionar o microfone. Use o botão **Falar** para comandos de voz durante a música; ao parar a reprodução, a escuta contínua volta ao estado anterior. O áudio sai no dispositivo que abriu a interface da Kunica. Se o navegador não suportar um formato de arquivo da biblioteca, o painel mostrará falha de reprodução.
+Durante a reprodução, a escuta por alcunhas continua ativa se já estava ligada. Diga
+“Kunica, outra” para pausar a faixa e pedir outra na mesma fala. Se disser só “Kunica”,
+a música pausa, a assistente pergunta “O que você quer?” e espera uma resposta sem
+alcunha por `follow_up_seconds` (8 s por padrão). Se não houver resposta, a faixa
+retoma. Ao processar um comando, ela retoma a faixa anterior depois de responder,
+salvo se o comando trocar, pausar ou parar a música. A janela normal de conversa sem
+alcunha não vale enquanto a música toca: letras e ruídos não devem virar comandos.
+Se a escuta por alcunhas foi desligada manualmente, o botão **Falar** continua disponível.
+O áudio sai no dispositivo que abriu a interface da Kunica. Se o navegador não suportar
+um formato de arquivo da biblioteca, o painel mostrará falha de reprodução.
 
 ```bash
 cp .env.example .env
@@ -191,8 +219,9 @@ Três ajustes entram junto com o Whisper e fazem diferença na precisão:
 - **Vocabulário do assistente** como `initial_prompt`: o nome e as alcunhas do `config/assistant.yaml`
   enviesam o decoder (é o que evita `Kunica` virar `cônica`). Para reforçar, defina
   `WHISPER_INITIAL_PROMPT` no `.env` com nomes de cidades e jargão do seu dia a dia.
-- **Microfone sem supressão de ruído** (`frontend/src/app.js`): o processamento de “chamada de voz”
-  corta pedaços das palavras. Cancelamento de eco e ganho automático continuam ligados.
+- **Microfone com supressão de ruído** (`frontend/src/app.js`): `noiseSuppression`,
+  `echoCancellation` e `autoGainControl` ficam ligados tanto no botão Falar quanto na escuta
+  por alcunhas, conforme o suporte do navegador. Reabra a captura após atualizar a página.
 
 Para trocar o tamanho do modelo do Whisper: `WHISPER_MODEL=medium` erra ainda menos (bem mais lento em
 CPU) e `base`/`tiny` são mais rápidos e mais imprecisos.

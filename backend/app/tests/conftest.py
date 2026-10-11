@@ -6,6 +6,7 @@ mantendo o mesmo caminho de código usado em produção (``httpx.AsyncClient``).
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,11 @@ from typing import Any
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+
+# Fora do container (por exemplo no WSL), usa o mesmo YAML versionado.
+_config = Path(__file__).resolve().parents[3] / "config" / "assistant.yaml"
+if _config.is_file():
+    os.environ.setdefault("ASSISTANT_CONFIG", str(_config))
 
 from app import main, memory
 

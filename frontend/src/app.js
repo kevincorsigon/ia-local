@@ -59,13 +59,17 @@ const musicAudio = new Audio();
 let musicQueue = [];
 let musicIndex = -1;
 let musicRandomMode = false;
+let musicPlaybackArtist = "";
 let musicView = "tracks";
 let musicStart = 0;
 let musicFilterArtist = "";
 let musicFilterGenre = "";
-let wakeWasEnabledForMusic = false;
 let musicPausedForMic = false;
 let musicPausedForSpeech = false;
+let musicPausedForWake = false;
+let musicWakeAwaitingCommand = false;
+let musicWakePromptPending = false;
+let musicWakeTimer = null;
 // Verdadeiro do envio da mensagem até o fim da fala da resposta. Enquanto isso o rosto fica em
 // “pensando/falando” e a escuta por alcunhas espera: era o loop de escuta que reescrevia o estado
 // para “listening” a cada 80 ms e fazia a boca parar de mexer no meio do áudio.
@@ -151,10 +155,8 @@ function updateMicHint(text) {
 }
 
 function micConstraints() {
-  // O processamento de “chamada de voz” atrapalha o reconhecedor: a supressão de ruído corta
-  // pedaços das palavras (o Whisper foi treinado com áudio cru). Mantemos o cancelamento de eco
-  // para o microfone não captar a própria voz do assistente e o ganho automático para o nível.
-  const audio = { echoCancellation: true, noiseSuppression: false, autoGainControl: true };
+  // Reduz ruído ambiente e eco em toda captura: botão Falar e escuta por alcunhas.
+  const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   if (chosenMicId) audio.deviceId = { exact: chosenMicId };
   return { audio };
 }
@@ -360,10 +362,11 @@ async function loadMusicView() {
 async function playMusicTrack(track, queue = null, randomMode = false) {
   if (!track?.id) return;
   musicPausedForSpeech = false;
-  if (wakeEnabled) {
-    wakeWasEnabledForMusic = true;
-    await setWakeMode(false);
-  }
+  clearMusicWakeState();
+  // Durante a música o microfone segue ativo: só uma alcunha abre a conversa;
+  // a janela normal de 60 s não vale (só a curta após "Kunica" sozinho).
+  wakeFollowupUntil = 0;
+  conversationUntil = 0;
   if (queue) {
     musicQueue = queue;
     musicIndex = queue.findIndex((item) => item.id === track.id);
@@ -372,6 +375,7 @@ async function playMusicTrack(track, queue = null, randomMode = false) {
     musicIndex = 0;
   }
   musicRandomMode = randomMode;
+  musicPlaybackArtist = track.artists?.[0] || "";
   musicAudio.pause();
   musicAudio.src = `/api/music/stream/${encodeURIComponent(track.id)}`;
   musicNowPlaying.textContent = `${track.name} — ${track.artists.join(", ") || "Artista desconhecido"}`;
@@ -385,13 +389,18 @@ async function playMusicTrack(track, queue = null, randomMode = false) {
   }
 }
 
-async function playRandomMusic() {
+async function playRandomMusic(continueArtist = false) {
   try {
     const result = await musicRequest("/api/music/random", {
-      library_id: musicLibrary.value, artist: musicFilterArtist, genre: musicFilterGenre,
+      library_id: musicLibrary.value,
+      artist: musicFilterArtist || (continueArtist ? musicPlaybackArtist : ""),
+      genre: musicFilterGenre,
+      exclude_track_id: continueArtist ? (musicQueue[musicIndex]?.id || "") : "",
     });
     if (!result.track) {
-      musicStatus.textContent = "Não encontrei música para esta seleção.";
+      musicStatus.textContent = continueArtist
+        ? "Não encontrei outra música para esta seleção."
+        : "Não encontrei música para esta seleção.";
       return;
     }
     await playMusicTrack(result.track, null, true);
@@ -404,25 +413,65 @@ async function nextMusicTrack() {
   if (musicQueue[musicIndex + 1]) {
     await playMusicTrack(musicQueue[musicIndex + 1], musicQueue, musicRandomMode);
   } else {
-    await playRandomMusic();
+    await playRandomMusic(true);
   }
 }
 
 function stopMusic() {
+  clearMusicWakeState();
   musicAudio.pause();
   musicAudio.removeAttribute("src");
   musicAudio.load();
   musicQueue = [];
   musicIndex = -1;
   musicRandomMode = false;
+  musicPlaybackArtist = "";
   musicNowPlaying.textContent = "Nenhuma música tocando";
   musicPlayPause.textContent = "Tocar";
   musicPausedForMic = false;
   musicPausedForSpeech = false;
-  if (wakeWasEnabledForMusic) {
-    wakeWasEnabledForMusic = false;
-    void setWakeMode(true);
+  showReadyState();
+}
+
+function clearMusicWakeTimer() {
+  if (musicWakeTimer !== null) window.clearTimeout(musicWakeTimer);
+  musicWakeTimer = null;
+}
+
+function clearMusicWakeState() {
+  clearMusicWakeTimer();
+  musicPausedForWake = false;
+  musicWakeAwaitingCommand = false;
+  musicWakePromptPending = false;
+  wakeFollowupUntil = 0;
+}
+
+function resumeMusicAfterWake() {
+  if (!musicPausedForWake || musicWakeAwaitingCommand) return;
+  musicPausedForWake = false;
+  if (musicAudio.getAttribute("src") && musicAudio.paused) {
+    void musicAudio.play().then(() => { musicPlayPause.textContent = "Pausar"; }).catch(() => {});
   }
+}
+
+function openMusicWakeFollowup() {
+  if (!musicWakePromptPending || !musicWakeAwaitingCommand) return;
+  musicWakePromptPending = false;
+  armMusicWakeTimeout();
+}
+
+function armMusicWakeTimeout() {
+  if (!musicWakeAwaitingCommand) return;
+  clearMusicWakeTimer();
+  wakeFollowupUntil = performance.now() + followUpSeconds * 1000;
+  musicWakeTimer = window.setTimeout(() => {
+    musicWakeTimer = null;
+    if (!musicWakeAwaitingCommand) return;
+    musicWakeAwaitingCommand = false;
+    wakeFollowupUntil = 0;
+    resumeMusicAfterWake();
+    showReadyState();
+  }, followUpSeconds * 1000);
 }
 
 function resumeMusicAfterMic() {
@@ -433,7 +482,7 @@ function resumeMusicAfterMic() {
 
 async function applyMusicAction(action) {
   if (!action) return;
-  if (action.action === "play") await playMusicTrack(action.track);
+  if (action.action === "play") await playMusicTrack(action.track, action.queue || null);
   else if (action.action === "pause") { musicAudio.pause(); musicPlayPause.textContent = "Tocar"; }
   else if (action.action === "resume") { await musicAudio.play().catch(() => {}); musicPlayPause.textContent = "Pausar"; }
   else if (action.action === "stop") stopMusic();
@@ -464,7 +513,10 @@ musicNextTrack.addEventListener("click", () => void nextMusicTrack());
 musicStop.addEventListener("click", stopMusic);
 musicPlayPause.addEventListener("click", () => {
   if (!musicAudio.getAttribute("src")) return;
-  if (musicAudio.paused) void musicAudio.play().then(() => { musicPlayPause.textContent = "Pausar"; }).catch(() => {});
+  if (musicAudio.paused) {
+    clearMusicWakeState();
+    void musicAudio.play().then(() => { musicPlayPause.textContent = "Pausar"; }).catch(() => {});
+  }
   else { musicAudio.pause(); musicPlayPause.textContent = "Tocar"; }
 });
 setMusicOpen(false);
@@ -480,6 +532,10 @@ function conversationActive() {
 }
 
 function idleVoiceLabel() {
+  if (musicWakeAwaitingCommand) return "O que você quer?";
+  if (musicAudio.getAttribute("src") && !musicAudio.paused) {
+    return `Diga "${wakeLabel}" para falar durante a música`;
+  }
   return conversationActive() ? "Ouvindo — conversa ativa, pode falar" : `Diga "${wakeLabel}" quando quiser falar`;
 }
 
@@ -555,7 +611,8 @@ function describeTrack(stream) {
 // ainda assim é transcrita, então nenhum áudio é descartado.
 async function captureSpeech(
   stream,
-  { maxMs = 15000, fallbackMs = 8000, idleLabel = "Ouvindo…", activeLabel = "Ouvindo…" } = {}
+  { maxMs = 15000, fallbackMs = 8000, idleLabel = "Ouvindo…", activeLabel = "Ouvindo…",
+    onSpeechStart = null } = {}
 ) {
   const context = new AudioContext();
   try {
@@ -657,7 +714,10 @@ async function captureSpeech(
       const elapsed = now - startedAt;
       const speaking = level >= threshold;
       if (speaking) {
-        if (!speechDetected) log("fala detectada — paro quando você ficar em silêncio");
+        if (!speechDetected) {
+          log("fala detectada — paro quando você ficar em silêncio");
+          onSpeechStart?.();
+        }
         speechDetected = true;
         speechMs += delta;
         silenceMs = 0;
@@ -703,24 +763,47 @@ async function waitWhileSpeaking() {
 
 async function listenForWake() {
   while (wakeEnabled && wakeStream) {
+    // Com música ativa, evita transcrever a própria resposta falada da assistente.
+    if (musicAudio.getAttribute("src") && assistantBusy) await waitWhileSpeaking();
+    if (!wakeEnabled) break;
+    const musicPlaying = !!musicAudio.getAttribute("src") && !musicAudio.paused;
     const capture = await captureSpeech(wakeStream, {
-      maxMs: 20000,
+      maxMs: musicPlaying ? 8000 : 20000,
       fallbackMs: 8000,
       idleLabel: idleVoiceLabel(),
       activeLabel: "Ouvindo…",
+      onSpeechStart: () => {
+        if (musicWakeAwaitingCommand && !musicWakePromptPending) {
+          // O usuário começou a responder: o tempo de transcrição não conta na janela.
+          clearMusicWakeTimer();
+          wakeFollowupUntil = Number.POSITIVE_INFINITY;
+        }
+      },
     });
     if (!wakeEnabled) break;
     // Sem fala detectada e com áudio desprezível, apenas continua escutando em silêncio.
     if (!capture.speechDetected && capture.bytes < 8000) continue;
     await handleWakeClip(capture.blob);
+    if (musicWakeAwaitingCommand && !musicWakePromptPending && musicWakeTimer === null) {
+      armMusicWakeTimeout();
+    }
   }
 }
 
 // Cada fala renova a janela de conversa: o assistente só volta a exigir a alcunha
-// depois de ficar um tempo sem ouvir nada.
+// depois de ficar um tempo sem ouvir nada. Com música na sessão, cada pedido
+// exige alcunha (só a curta após "Kunica" sozinho vale).
 function startConversation(message) {
-  conversationUntil = performance.now() + conversationSeconds * 1000;
-  log(`conversa ativa por ${conversationSeconds}s — próxima fala não precisa de alcunha`);
+  if (musicPausedForWake || musicAudio.getAttribute("src")) {
+    clearMusicWakeTimer();
+    musicWakeAwaitingCommand = false;
+    musicWakePromptPending = false;
+    wakeFollowupUntil = 0;
+    conversationUntil = 0;
+  } else {
+    conversationUntil = performance.now() + conversationSeconds * 1000;
+    log(`conversa ativa por ${conversationSeconds}s — próxima fala não precisa de alcunha`);
+  }
   void sendMessage(message);
 }
 
@@ -783,12 +866,55 @@ async function handleWakeClip(blob) {
     if (result.wake) {
       const query = (result.wake.query || "").trim();
       log("alcunha detectada:", result.wake.phrase, "| pergunta:", query || "(só a saudação)");
+      if (musicAudio.getAttribute("src") && !musicAudio.paused) {
+        musicAudio.pause();
+        musicPlayPause.textContent = "Tocar";
+        musicPausedForWake = true;
+        conversationUntil = 0;
+        wakeFollowupUntil = 0;
+        log("música pausada pela alcunha");
+      }
       if (query) {
         startConversation(query);
+      } else if (musicPausedForWake) {
+        musicWakeAwaitingCommand = true;
+        musicWakePromptPending = true;
+        addBubble("assistant", "O que você quer?");
+        void speakAnswer("O que você quer?");
       } else {
         wakeFollowupUntil = now + followUpSeconds * 1000;
         void sendMessage("Oi, pode falar comigo.");
       }
+      return;
+    }
+    if (musicAudio.getAttribute("src") && !musicAudio.paused) {
+      // Letra ou som da caixa não vira comando: com música tocando, só a alcunha
+      // abre pedido; a janela normal de 60 s e a de continuação não valem.
+      conversationUntil = 0;
+      wakeFollowupUntil = 0;
+      showReadyState();
+      return;
+    }
+    if (musicWakeAwaitingCommand) {
+      if (now <= wakeFollowupUntil) {
+        log("comando após a alcunha, com música pausada");
+        startConversation(transcript);
+        return;
+      }
+      // Janela curta expirou: volta a exigir alcunha e retoma a faixa.
+      musicWakeAwaitingCommand = false;
+      wakeFollowupUntil = 0;
+      conversationUntil = 0;
+      resumeMusicAfterWake();
+      showReadyState();
+      return;
+    }
+    // Com música na sessão, cada pedido exige alcunha: a conversa normal de 60 s
+    // não vale; só a janela curta aberta pelo "Kunica" sozinho (tratada acima).
+    if (musicAudio.getAttribute("src")) {
+      conversationUntil = 0;
+      wakeFollowupUntil = 0;
+      showReadyState();
       return;
     }
     if (now <= wakeFollowupUntil) {
@@ -821,6 +947,10 @@ async function setWakeMode(enabled) {
   window.localStorage.setItem(wakeModeStorageKey, enabled ? "1" : "0");
   log("alcunhas:", enabled ? "ligando…" : "desligando");
   if (!enabled) {
+    musicWakeAwaitingCommand = false;
+    musicWakePromptPending = false;
+    clearMusicWakeTimer();
+    resumeMusicAfterWake();
     wakeEnabled = false;
     captureStopRequest = true;
     wakeRecorder?.stop();
@@ -893,14 +1023,17 @@ function finishPlayback() {
   if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
   currentAudioUrl = null;
   stopSpeakingButton.hidden = true;
-  // A resposta terminou: libera o tempo cheio de conversa antes de exigir a alcunha de novo.
-  if (conversationActive()) conversationUntil = performance.now() + conversationSeconds * 1000;
-  showReadyState();
+  // A pergunta da Kunica abre a janela só depois que a voz termina.
+  openMusicWakeFollowup();
+  if (musicAudio.getAttribute("src")) conversationUntil = 0;
+  else if (conversationActive()) conversationUntil = performance.now() + conversationSeconds * 1000;
   resumeMusicAfterMic();
   if (musicPausedForSpeech) {
     musicPausedForSpeech = false;
     if (musicAudio.getAttribute("src")) void musicAudio.play().catch(() => {});
   }
+  resumeMusicAfterWake();
+  showReadyState();
 }
 
 // Kokoro sintetiza em CPU: um trecho de até 220 caracteres leva ~1,3 s para virar áudio. Para a
@@ -1033,6 +1166,7 @@ async function speakAnswer(text) {
       stopSpeakingButton.textContent = "Tocar resposta";
       stopSpeakingButton.hidden = false;
       setState("idle", "A resposta está pronta para tocar.");
+      openMusicWakeFollowup();
     } else {
       finishPlayback();
     }
@@ -1305,7 +1439,7 @@ async function sendMessage(rawMessage) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({ message, session_id: sessionId, music_track_id: musicQueue[musicIndex]?.id || "" }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "Não consegui responder agora.");
@@ -1320,6 +1454,7 @@ async function sendMessage(rawMessage) {
     }
     pending.textContent = result.answer;
     if (result.music) await applyMusicAction(result.music);
+    if (result.music && ["pause", "resume"].includes(result.music.action)) clearMusicWakeState();
     if (result.music && ["play", "pause", "stop", "next"].includes(result.music.action)) musicPausedForMic = false;
     if (result.sources?.length) {
       const sources = document.createElement("div");
@@ -1346,17 +1481,23 @@ async function sendMessage(rawMessage) {
     if (skipNextSpeech) {
       skipNextSpeech = false;
       assistantBusy = false;
+      resumeMusicAfterWake();
       showReadyState();
     } else if (result.should_speak !== false) {
       // speakAnswer assume o estado e só libera no fim da fala (finishPlayback).
       void speakAnswer(result.answer);
     } else {
       assistantBusy = false;
+      resumeMusicAfterWake();
       showReadyState();
     }
     checkHealth();
   } catch (error) {
     assistantBusy = false;
+    musicWakeAwaitingCommand = false;
+    musicWakePromptPending = false;
+    clearMusicWakeTimer();
+    resumeMusicAfterWake();
     logWarn("falha no /api/chat:", error);
     pending.textContent = error.message || "Não consegui acessar o assistente.";
     pending.classList.add("error");
